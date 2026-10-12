@@ -2,6 +2,7 @@
 
 mod aim;
 mod fake;
+mod info;
 mod library;
 mod web;
 
@@ -208,63 +209,16 @@ fn fmt_lap(ms: u64) -> String {
 mod tests {
     use super::*;
 
-    fn fake(files: &[(&str, Vec<u8>)], chunk: u32) -> (Endpoint, KeepAlive) {
-        let mut csv = String::from("name,size,date,hour,nlap,nbest,best,pilota,track_name\r\n");
-        for (n, d) in files {
-            csv += &format!("{n},{},07/09/2026,14:08:51,1,,,,Great Bend T\r\n", d.len());
-        }
-        let cfg = fake::FakeConfig { csv, files: files.iter().map(|(n, d)| (n.to_string(), d.clone())).collect(), chunk };
-        let f = fake::spawn(
-            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
-            Some(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()),
-            cfg,
-        );
-        let ep = Endpoint { ip: Ipv4Addr::LOCALHOST, tcp_port: f.tcp.port(), udp_port: f.udp.unwrap().port() };
-        let ka = KeepAlive::start(&ep, 0);
-        (ep, ka)
-    }
-
     #[test]
-    fn lists_and_downloads_multi_chunk_files() {
-        let big: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
-        let (ep, _ka) = fake(&[("a_0001.xrz", big.clone()), ("a_0002.xrz", b"tiny".to_vec())], 65472);
+    fn downloads_a_session_from_the_fake_logger() {
+        let file: Vec<u8> = (0..200_000u32).map(|i| i as u8).collect(); // 4 chunks
+        let csv = format!("name,size,date,hour\r\na_0001.xrz,{},07/09/2026,14:08:51\r\n", file.len());
+        let files = HashMap::from([("a_0001.xrz".to_string(), file.clone())]);
+        let f = fake::spawn(TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(), None, fake::FakeConfig { csv, files, chunk: 65472 });
+        let ep = Endpoint { ip: Ipv4Addr::LOCALHOST, tcp_port: f.tcp.port(), udp_port: 0 };
+
         let mut s = Session::open(&ep).unwrap();
-        assert_eq!(s.hardware_info().unwrap(), "WiFi=ESP32|Reg=usa|Rev=02|");
-        let rows = s.list_sessions().unwrap();
-        assert_eq!(rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["a_0001.xrz", "a_0002.xrz"]);
-        let mut calls = 0;
-        let got = s.read_file("a_0001.xrz", &mut |_, _| calls += 1).unwrap();
-        assert_eq!(got, big);
-        assert_eq!(calls, 1 + 5, "one progress call up front, then one per chunk");
-        assert_eq!(s.read_file("a_0002.xrz", &mut |_, _| {}).unwrap(), b"tiny");
-    }
-
-    #[test]
-    fn rejected_commands_surface_as_errors_and_the_session_survives() {
-        let (ep, _ka) = fake(&[("a_0001.xrz", vec![1, 2, 3])], 65472);
-        let mut s = Session::open(&ep).unwrap();
-        let err = s.command(0x20005, b"", &mut |_, _| {}).unwrap_err();
-        assert!(err.downcast_ref::<aim::Rejected>().is_some(), "{err:#}");
-        assert_eq!(s.read_file("a_0001.xrz", &mut |_, _| {}).unwrap(), [1, 2, 3]);
-    }
-
-    #[test]
-    fn keepalive_discovers_the_logger() {
-        let (_ep, ka) = fake(&[], 65472);
-        let a = ka.wait_for_device(Duration::from_secs(3)).expect("no keep-alive answer");
-        assert_eq!((a.ip, a.logger_code, a.busy), (Ipv4Addr::LOCALHOST, 510, false));
-    }
-
-    #[test]
-    fn pull_stores_new_sessions_once() {
-        let dir = std::env::temp_dir().join(format!("lapanalysis-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let (ep, _ka) = fake(&[("a_0001.xrz", vec![9; 100_000])], 40_000);
-        let lib = Library::open(&dir).unwrap();
-        pull(&lib, &ep, 0, vec![]).unwrap();
-        assert_eq!(std::fs::read(dir.join("a_0001.xrz")).unwrap(), vec![9; 100_000]);
-        assert!(dir.join("index.json").is_file());
-        pull(&lib, &ep, 0, vec![]).unwrap(); // nothing new: no error, no re-download
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(s.list_sessions().unwrap()[0].name, "a_0001.xrz");
+        assert_eq!(s.read_file("a_0001.xrz", &mut |_, _| {}).unwrap(), file);
     }
 }

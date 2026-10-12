@@ -209,6 +209,28 @@ tr.link:hover td { background: var(--surface-2); }
 .chart .title .val { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 500; }
 .u-legend { display: none; }
 
+.title-cell { font-weight: 600; }
+.small { font-size: 12px; }
+
+dl.details { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 16px; margin: 12px 0 0; }
+dl.details dt { font-size: 12px; color: var(--muted); }
+dl.details dd { margin: 2px 0 0; font-weight: 500; }
+.notes { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); white-space: pre-wrap; }
+
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.field.wide { grid-column: 1 / -1; }
+input:not([type=checkbox]), textarea, select {
+  font: inherit; font-size: 14px; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+}
+textarea { resize: vertical; }
+input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pressures { width: auto; align-self: flex-start; }
+.pressures th, .pressures td { border: none; padding: 2px 8px 2px 0; }
+.pressures input { width: 76px; }
+label.check { display: flex; gap: 8px; align-items: center; margin-top: 12px; font-size: 13px; color: var(--text); }
+
 pre.log {
   max-height: 520px; overflow: auto; margin: 0;
   font: 12px/1.5 var(--mono); white-space: pre-wrap;
@@ -216,6 +238,7 @@ pre.log {
 }
 
 @media (max-width: 640px) {
+  .form-grid { grid-template-columns: 1fr; }
   .top { gap: 12px; padding: 0 16px; }
   .device-pill .label { display: none; }
   main { padding: 16px; }

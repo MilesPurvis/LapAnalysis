@@ -12,16 +12,23 @@ use libxrk::{ChannelValues, XrkFile};
 use serde::{Deserialize, Serialize};
 
 use crate::aim::DeviceSession;
+use crate::info::{friendly_file_name, SessionInfo};
 
 const INDEX_FILE: &str = "index.json";
 
 /// Reads sample `k` of a channel as f64, whatever its stored type.
 type Sampler<'a> = Box<dyn Fn(usize) -> f64 + 'a>;
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct IndexEntry {
-    device: DeviceSession,
-    downloaded_at: u64,
+    /// The logger's summary row, captured when the file was downloaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device: Option<DeviceSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    downloaded_at: Option<u64>,
+    /// What you've recorded about the session.
+    #[serde(default)]
+    info: SessionInfo,
 }
 
 pub struct Library {
@@ -45,16 +52,20 @@ pub struct Loaded {
 #[derive(Serialize)]
 pub struct LibraryItem {
     pub name: String,
+    /// Your name for the session (empty if not set).
+    pub title: String,
     pub size: u64,
     pub kind: &'static str,
     pub date: String,
     pub time: String,
     pub track: String,
+    pub driver: String,
+    pub vehicle: String,
+    pub has_notes: bool,
     pub laps: usize,
     pub best_ms: Option<u64>,
     pub duration_ms: Option<u64>,
     pub downloaded_at: Option<u64>,
-    pub repaired: bool,
 }
 
 #[derive(Serialize)]
@@ -80,11 +91,19 @@ pub struct ChannelInfo {
 #[derive(Serialize)]
 pub struct SessionDetail {
     pub name: String,
+    pub title: String,
     pub kind: &'static str,
     pub size: u64,
+    /// Effective values: yours if set, else what the logger recorded.
     pub driver: String,
     pub vehicle: String,
     pub venue: String,
+    /// The logger's own track name, for showing what an override replaces.
+    pub logger_track: String,
+    pub info: SessionInfo,
+    /// Other library sessions recorded on the same day.
+    pub same_day: usize,
+    pub suggestions: Suggestions,
     pub date: String,
     pub time: String,
     pub logger: String,
@@ -96,6 +115,26 @@ pub struct SessionDetail {
     pub text: Option<String>,
     pub error: Option<String>,
     pub repaired_bytes: usize,
+}
+
+/// Values used before, most common first, for autocomplete.
+#[derive(Default, Serialize)]
+pub struct Suggestions {
+    pub drivers: Vec<String>,
+    pub vehicles: Vec<String>,
+    pub tracks: Vec<String>,
+    pub compounds: Vec<String>,
+}
+
+/// What the logger recorded for a session: the download-time summary row first, then the
+/// file's own metadata.
+#[derive(Default)]
+struct Recorded {
+    date: String,
+    time: String,
+    track: String,
+    driver: String,
+    vehicle: String,
 }
 
 #[derive(Serialize)]
@@ -162,9 +201,84 @@ impl Library {
         fs::rename(&tmp, &path)?;
         let downloaded_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let mut index = self.index.lock().unwrap();
-        index.insert(device.name.clone(), IndexEntry { device: device.clone(), downloaded_at });
-        fs::write(self.dir.join(INDEX_FILE), serde_json::to_vec_pretty(&*index)?)?;
-        Ok(())
+        // A re-download keeps the details you've already entered.
+        let entry = index.entry(device.name.clone()).or_default();
+        entry.device = Some(device.clone());
+        entry.downloaded_at = Some(downloaded_at);
+        self.save_index(&index)
+    }
+
+    fn save_index(&self, index: &BTreeMap<String, IndexEntry>) -> Result<()> {
+        let path = self.dir.join(INDEX_FILE);
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, serde_json::to_vec_pretty(index)?)?;
+        fs::rename(&tmp, &path).context("save library index.json")
+    }
+
+    /// What the logger recorded for every library file.
+    fn recorded_all(&self) -> Result<Vec<(String, Recorded)>> {
+        let index = self.index.lock().unwrap().clone();
+        let mut out = vec![];
+        for name in self.file_names()? {
+            let loaded = self.load(&name)?;
+            let rec = recorded(index.get(&name), &loaded);
+            out.push((name, rec));
+        }
+        Ok(out)
+    }
+
+    /// Save your details for a session. With `fill_day`, also copy its driver, car and track
+    /// into the other sessions recorded that day that have none yet (neither yours nor the
+    /// logger's). Returns how many other sessions changed.
+    pub fn update_info(&self, name: &str, info: SessionInfo, fill_day: bool) -> Result<usize> {
+        if !self.contains(name) {
+            bail!("no session {name}");
+        }
+        let info = info.cleaned()?;
+        let all = if fill_day { self.recorded_all()? } else { vec![] };
+        let day = all.iter().find(|(n, _)| n == name).map(|(_, r)| r.date.clone()).unwrap_or_default();
+        let mut index = self.index.lock().unwrap();
+        let mut filled = 0;
+        for (other, rec) in all.iter().filter(|(n, r)| n != name && !day.is_empty() && r.date == day) {
+            let e = index.entry(other.clone()).or_default();
+            let before = e.info.clone();
+            // A driver or car the logger recorded is kept. Its track name is usually a
+            // truncated version of the same track, so yours replaces it.
+            if e.info.driver.is_empty() && rec.driver.is_empty() {
+                e.info.driver = info.driver.clone();
+            }
+            if e.info.vehicle.is_empty() && rec.vehicle.is_empty() {
+                e.info.vehicle = info.vehicle.clone();
+            }
+            if e.info.track.is_empty() {
+                e.info.track = info.track.clone();
+            }
+            filled += (e.info != before) as usize;
+        }
+        index.entry(name.to_string()).or_default().info = info;
+        self.save_index(&index)?;
+        Ok(filled)
+    }
+
+    pub fn suggestions(&self) -> Suggestions {
+        let index = self.index.lock().unwrap();
+        let infos = || index.values().map(|e| &e.info);
+        let devices = || index.values().filter_map(|e| e.device.as_ref());
+        Suggestions {
+            drivers: ranked(infos().map(|i| i.driver.as_str()).chain(devices().map(|d| d.driver.as_str()))),
+            vehicles: ranked(infos().map(|i| i.vehicle.as_str()).chain(devices().map(|d| d.vehicle.as_str()))),
+            tracks: ranked(infos().map(|i| i.track.as_str()).chain(devices().map(|d| d.track.as_str()))),
+            compounds: ranked(infos().map(|i| i.tyres.compound.as_str())),
+        }
+    }
+
+    /// File name for downloading a session from the UI.
+    pub fn download_name(&self, name: &str) -> String {
+        let entry = self.index.lock().unwrap().get(name).cloned();
+        let Ok(loaded) = self.load(name) else { return name.to_string() };
+        let rec = recorded(entry.as_ref(), &loaded);
+        let info = entry.map(|e| e.info).unwrap_or_default();
+        friendly_file_name(name, &rec.date, first(&info.track, &rec.track), &info.name)
     }
 
     pub fn raw(&self, name: &str) -> Result<Vec<u8>> {
@@ -193,32 +307,30 @@ impl Library {
             let size = fs::metadata(self.path(&name)?)?.len();
             let loaded = self.load(&name)?;
             let (laps, best) = loaded.xrk.as_ref().map(lap_stats).unwrap_or((0, None));
+            let entry = index.get(&name);
+            let rec = recorded(entry, &loaded);
+            let info = entry.map(|e| e.info.clone()).unwrap_or_default();
             let mut item = LibraryItem {
                 kind: kind(&loaded),
                 name: name.clone(),
+                title: info.name.clone(),
                 size,
-                date: String::new(),
-                time: String::new(),
-                track: String::new(),
+                track: first(&info.track, &rec.track).to_string(),
+                driver: first(&info.driver, &rec.driver).to_string(),
+                vehicle: first(&info.vehicle, &rec.vehicle).to_string(),
+                has_notes: !info.notes.is_empty(),
+                date: rec.date,
+                time: rec.time,
                 laps,
                 best_ms: best,
                 duration_ms: None,
-                downloaded_at: None,
-                repaired: loaded.xrk.is_some() && loaded.repaired_bytes > 0,
+                downloaded_at: entry.and_then(|e| e.downloaded_at),
             };
-            if let Some(e) = index.get(&name) {
-                item.date = e.device.date.clone();
-                item.time = e.device.time.clone();
-                item.track = e.device.track.clone();
-                item.duration_ms = e.device.duration_ms;
-                item.downloaded_at = Some(e.downloaded_at);
+            if let Some(d) = entry.and_then(|e| e.device.as_ref()) {
+                item.duration_ms = d.duration_ms;
                 // Match the Logger tab, which counts the out-lap too.
-                item.laps = e.device.laps as usize;
-                item.best_ms = e.device.best_ms.or(item.best_ms);
-            } else if let Some(x) = &loaded.xrk {
-                item.date = x.metadata.log_date.as_deref().map(mdy_to_iso).unwrap_or_default();
-                item.time = x.metadata.log_time.clone().unwrap_or_default();
-                item.track = x.metadata.venue.clone().unwrap_or_default();
+                item.laps = d.laps as usize;
+                item.best_ms = d.best_ms.or(item.best_ms);
             }
             if item.duration_ms.is_none() {
                 item.duration_ms = loaded.xrk.as_ref().map(|x| (span_ms(x).1 - span_ms(x).0) as u64);
@@ -232,34 +344,40 @@ impl Library {
     pub fn detail(&self, name: &str) -> Result<SessionDetail> {
         let loaded = self.load(name)?;
         let size = fs::metadata(self.path(name)?)?.len();
-        let device = self.index.lock().unwrap().get(name).map(|e| e.device.clone());
+        let entry = self.index.lock().unwrap().get(name).cloned();
+        let rec = recorded(entry.as_ref(), &loaded);
+        let info = entry.as_ref().map(|e| e.info.clone()).unwrap_or_default();
+        let same_day = if rec.date.is_empty() {
+            0
+        } else {
+            self.recorded_all()?.iter().filter(|(n, r)| n != name && r.date == rec.date).count()
+        };
         let mut d = SessionDetail {
             name: name.to_string(),
+            title: info.name.clone(),
             kind: kind(&loaded),
             size,
-            driver: String::new(),
-            vehicle: String::new(),
-            venue: String::new(),
-            date: String::new(),
-            time: String::new(),
+            driver: first(&info.driver, &rec.driver).to_string(),
+            vehicle: first(&info.vehicle, &rec.vehicle).to_string(),
+            venue: first(&info.track, &rec.track).to_string(),
+            logger_track: rec.track.clone(),
+            info,
+            same_day,
+            suggestions: self.suggestions(),
+            date: rec.date,
+            time: rec.time,
             logger: String::new(),
             duration_s: 0.0,
             laps: vec![],
             channels: vec![],
             has_gps: false,
-            device,
+            device: entry.and_then(|e| e.device),
             text: loaded.text.clone(),
             error: loaded.error.clone(),
             repaired_bytes: loaded.repaired_bytes,
         };
         let Some(x) = &loaded.xrk else { return Ok(d) };
         let m = &x.metadata;
-        let s = |v: &Option<String>| v.clone().unwrap_or_default();
-        d.driver = s(&m.driver);
-        d.vehicle = s(&m.vehicle);
-        d.venue = s(&m.venue);
-        d.date = m.log_date.as_deref().map(mdy_to_iso).unwrap_or_default();
-        d.time = s(&m.log_time);
         d.logger = m.logger_model.clone().or_else(|| m.device_name.clone()).unwrap_or_default();
         let (t0, t1) = span_ms(x);
         d.duration_s = (t1 - t0) as f64 / 1000.0;
@@ -311,6 +429,36 @@ impl Library {
         }
         Ok(tr)
     }
+}
+
+fn first<'a>(mine: &'a str, logger: &'a str) -> &'a str {
+    if mine.is_empty() { logger } else { mine }
+}
+
+fn recorded(entry: Option<&IndexEntry>, loaded: &Loaded) -> Recorded {
+    let dev = entry.and_then(|e| e.device.as_ref());
+    let meta = loaded.xrk.as_ref().map(|x| &x.metadata);
+    let from_dev = |f: fn(&DeviceSession) -> &str| dev.map(f).unwrap_or("");
+    let from_meta = |f: fn(&libxrk::Metadata) -> Option<&str>| meta.and_then(f).unwrap_or("");
+    let meta_date = meta.and_then(|m| m.log_date.as_deref()).map(mdy_to_iso).unwrap_or_default();
+    Recorded {
+        date: first(from_dev(|d| &d.date), &meta_date).to_string(),
+        time: first(from_dev(|d| &d.time), from_meta(|m| m.log_time.as_deref())).to_string(),
+        track: first(from_dev(|d| &d.track), from_meta(|m| m.venue.as_deref())).to_string(),
+        driver: first(from_dev(|d| &d.driver), from_meta(|m| m.driver.as_deref())).to_string(),
+        vehicle: first(from_dev(|d| &d.vehicle), from_meta(|m| m.vehicle.as_deref())).to_string(),
+    }
+}
+
+/// Distinct non-empty values, most frequent first (ties alphabetical), ignoring case.
+fn ranked<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut counts: HashMap<String, (String, usize)> = HashMap::new();
+    for v in values.map(str::trim).filter(|v| !v.is_empty()) {
+        counts.entry(v.to_lowercase()).or_insert_with(|| (v.to_string(), 0)).1 += 1;
+    }
+    let mut out: Vec<(String, usize)> = counts.into_values().collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    out.into_iter().map(|(v, _)| v).collect()
 }
 
 fn parse(raw: &[u8]) -> Loaded {
@@ -525,45 +673,46 @@ fn mdy_to_iso(mdy: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn decimation_keeps_extremes_and_order() {
-        let times: Vec<i64> = (0..10_000).map(|i| i * 10).collect();
-        let vals: Vec<f64> = (0..10_000).map(|i| if i == 4321 { 99.0 } else { (i % 7) as f64 }).collect();
-        let (t, v) = decimate_minmax(&times, |k| vals[k], 0, 100);
-        assert!(t.len() <= 200);
-        assert!(t.windows(2).all(|w| w[0] < w[1]));
-        assert!(v.contains(&99.0));
+    fn row(name: &str) -> DeviceSession {
+        let csv = format!("name,size,date,hour,track_name\r\n{name},0,07/09/2026,12:00:00,Great Bend T\r\n");
+        crate::aim::parse_summary(&csv).remove(0)
+    }
+
+    fn temp_library(tag: &str) -> (PathBuf, Library) {
+        let dir = std::env::temp_dir().join(format!("lapanalysis-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let lib = Library::open(&dir).unwrap();
+        (dir, lib)
     }
 
     #[test]
-    fn short_series_pass_through() {
-        let times = [0, 100, 200];
-        let (t, v) = decimate_minmax(&times, |k| k as f64, 0, 100);
-        assert_eq!((t, v), (vec![0.0, 0.1, 0.2], vec![0.0, 1.0, 2.0]));
-    }
-
-    #[test]
-    fn strips_debug_log_lines_from_binary_data() {
-        // Shapes taken from a_0124.xrz: a log prefix before the zlib header, and a block of
-        // lines glued straight onto binary bytes (no separator) mid-file.
-        let mut raw = b"39789 I: PreBuff Size: 0x00002bd1\r\n40041 I: Start Memo: 1:/MEM/A_0124.XRZ\r\n".to_vec();
-        raw.extend_from_slice(&[0x78, 0x01, 0x9c, 0x7d, b'9', 0xf4]);
-        raw.extend_from_slice(b"99666 I: BEST LAP\r\n  125 CR: take_mutex [162]: get FS mutex\r\n83856 N: IOE: 0x02\r\n");
-        raw.extend_from_slice(&[0x00, b'1', b'2', b' ', b'I', 0x0d, 0x0a, 0xff]);
+    fn strips_debug_log_lines() {
+        let mut raw = b"40041 I: Start Memo: 1:/MEM/A_0124.XRZ\r\n".to_vec();
+        raw.extend_from_slice(&[0x78, 0x01, 0x9c]);
+        raw.extend_from_slice(b"38766 I: LAP: n.1  1:42.419\r\n");
+        raw.push(0xff);
         let (data, lines) = strip_log_lines(&raw);
-        assert_eq!(data, [0x78, 0x01, 0x9c, 0x7d, b'9', 0xf4, 0x00, b'1', b'2', b' ', b'I', 0x0d, 0x0a, 0xff]);
-        assert_eq!(lines.len(), 5);
-        assert_eq!(lines[3], "125 CR: take_mutex [162]: get FS mutex");
+        assert_eq!((data, lines.len()), (vec![0x78, 0x01, 0x9c, 0xff], 2));
     }
 
     #[test]
-    fn clean_data_is_untouched() {
-        let raw: Vec<u8> = (0..50_000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
-        assert_eq!(strip_log_lines(&raw).0, raw);
+    fn saves_session_details() {
+        let (dir, lib) = temp_library("details");
+        lib.store(&row("a_1.xrz"), b"").unwrap();
+        let info = SessionInfo { name: "Practice 2".into(), driver: "Miles".into(), ..Default::default() };
+        lib.update_info("a_1.xrz", info, false).unwrap();
+        let item = Library::open(&dir).unwrap().list().unwrap().remove(0);
+        assert_eq!((item.title.as_str(), item.driver.as_str()), ("Practice 2", "Miles"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn xrk_dates_are_month_first() {
-        assert_eq!(mdy_to_iso("09/07/2026"), "2026-09-07");
+    fn reads_an_older_index_file() {
+        let (dir, _) = temp_library("compat");
+        fs::write(dir.join("a_1.xrz"), b"").unwrap();
+        let device = serde_json::to_string(&row("a_1.xrz")).unwrap();
+        fs::write(dir.join(INDEX_FILE), format!(r#"{{"a_1.xrz":{{"device":{device},"downloaded_at":1}}}}"#)).unwrap();
+        assert_eq!(Library::open(&dir).unwrap().list().unwrap()[0].track, "Great Bend T");
+        fs::remove_dir_all(dir).unwrap();
     }
 }

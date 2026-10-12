@@ -22,9 +22,16 @@ const fmt = {
   },
   dur(ms) {
     if (ms == null) return "–";
-    const t = Math.round(ms / 1000), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
-    const ss = String(s).padStart(2, "0");
-    return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+    const t = Math.round(ms / 1000), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+    return h ? `${h}h ${m}m` : `${m}m ${String(sec).padStart(2, "0")}s`;
+  },
+  // When a session started, e.g. "Sep 7, 2026, 1:43 PM"; time of day, not a duration.
+  started(iso, time) {
+    if (!iso) return "–";
+    const d = new Date(`${iso}T${time || "00:00:00"}`);
+    if (isNaN(d)) return [iso, time].filter(Boolean).join(" ");
+    const day = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    return time ? `${day}, ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", hour12: true })}` : day;
   },
   clock(sec, decimals = 0) {
     const neg = sec < 0 ? "-" : "";
@@ -117,15 +124,16 @@ function libraryView(view) {
       return;
     }
     el.innerHTML = `<div class="table-wrap"><table>
-      <thead><tr><th>Session</th><th>Date</th><th>Time</th><th>Track</th><th class="num">Laps</th><th class="num">Best lap</th><th class="num">Duration</th><th class="num">Size</th></tr></thead>
+      <thead><tr><th>Session</th><th>Started</th><th>Track</th><th>Driver</th><th>Car</th><th class="num">Laps</th><th class="num">Best lap</th><th class="num">Duration</th></tr></thead>
       <tbody>${items.map((i) => `
         <tr class="link" data-name="${esc(i.name)}">
-          <td><span class="mono">${esc(i.name)}</span> ${i.kind !== "session" ? `<span class="chip warn">${i.kind === "log" ? "logger log" : "unreadable"}</span>` : ""}${i.repaired ? ` <span class="chip" title="The logger wrote debug-log lines into this file; they're removed before reading">repaired</span>` : ""}</td>
-          <td>${fmt.date(i.date)}</td><td>${esc(i.time) || "–"}</td><td>${esc(i.track) || "–"}</td>
+          <td>${i.title ? `<div class="title-cell">${esc(i.title)}</div><div class="mono muted small">${esc(i.name)}</div>` : `<span class="mono">${esc(i.name)}</span>`}
+            ${i.kind !== "session" ? `<span class="chip warn">${i.kind === "log" ? "logger log" : "unreadable"}</span>` : ""}</td>
+          <td>${fmt.started(i.date, i.time)}</td><td>${esc(i.track) || "–"}</td>
+          <td>${esc(i.driver) || "–"}</td><td>${esc(i.vehicle) || "–"}</td>
           <td class="num">${i.kind === "session" ? i.laps : "–"}</td>
           <td class="num">${fmt.lap(i.best_ms)}</td>
           <td class="num">${fmt.dur(i.duration_ms)}</td>
-          <td class="num">${fmt.bytes(i.size)}</td>
         </tr>`).join("")}</tbody></table></div>`;
     el.querySelectorAll("tr.link").forEach((tr) => tr.addEventListener("click", () => {
       location.hash = `#/session/${encodeURIComponent(tr.dataset.name)}`;
@@ -179,12 +187,12 @@ function loggerView(view) {
     if (!sessions) return;
     if (!sessions.length) { el.innerHTML = `<div class="empty">The logger has no recorded sessions.</div>`; return; }
     el.innerHTML = `<table>
-      <thead><tr><th><input type="checkbox" id="all"></th><th>Session</th><th>Date</th><th>Time</th><th>Track</th><th class="num">Laps</th><th class="num">Best lap</th><th class="num">Duration</th><th class="num">Size</th><th></th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="all"></th><th>Session</th><th>Started</th><th>Track</th><th class="num">Laps</th><th class="num">Best lap</th><th class="num">Duration</th><th class="num">Size</th><th></th></tr></thead>
       <tbody>${sessions.map((s) => `
         <tr>
           <td><input type="checkbox" class="pick" value="${esc(s.name)}"></td>
           <td class="mono">${esc(s.name)}</td>
-          <td>${fmt.date(s.date)}</td><td>${esc(s.time)}</td><td>${esc(s.track) || "–"}</td>
+          <td>${fmt.started(s.date, s.time)}</td><td>${esc(s.track) || "–"}</td>
           <td class="num">${s.laps}</td><td class="num">${fmt.lap(s.best_ms)}</td>
           <td class="num">${fmt.dur(s.duration_ms)}</td><td class="num">${fmt.bytes(s.size)}</td>
           <td>${s.in_library ? `<a class="chip good" href="#/session/${encodeURIComponent(s.name)}">In library</a>` : `<span class="chip accent">New</span>`}</td>
@@ -288,15 +296,61 @@ function sessionView(view, name) {
     render();
   }).catch((e) => { view.innerHTML = `<div class="empty error">${esc(e.message)}</div>`; });
 
-  function render() {
-    const d = detail;
-    const title = d.venue || d.device?.track || d.name;
-    const sub = [d.name, d.date && `${fmt.date(d.date)} ${d.time}`, d.duration_s && fmt.dur(d.duration_s * 1000), d.logger].filter(Boolean).map(esc).join(" · ");
-    let html = `<div class="row" style="margin-bottom:16px">
+  function headHtml(d) {
+    const title = d.title || d.venue || d.name;
+    const sub = [d.title && d.venue, d.name, d.date && fmt.started(d.date, d.time), d.duration_s && fmt.dur(d.duration_s * 1000), fmt.bytes(d.size), d.logger]
+      .filter(Boolean).map(esc).join(" · ");
+    return `<div class="row" style="margin-bottom:16px">
       <div><h1>${esc(title)}</h1><p class="sub" style="margin:0">${sub}</p></div>
       <span class="spacer"></span>
       <a class="button" href="#/library">← Library</a>
       <a class="button" href="${base}/raw">Download .xrz</a></div>`;
+  }
+
+  function renderDetails(editing, flash = "") {
+    const el = $("#details");
+    if (!el) return;
+    el.innerHTML = editing ? detailsForm(detail) : detailsView(detail, flash);
+    if (!editing) {
+      $("#edit-details").addEventListener("click", () => renderDetails(true));
+      return;
+    }
+    const form = $("#details-form");
+    $("[name=name]", form).focus();
+    $("#cancel-details").addEventListener("click", () => renderDetails(false));
+    form.addEventListener("keydown", (e) => { if (e.key === "Escape") renderDetails(false); });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = new FormData(form);
+      const num = (k) => (f.get(k) === "" ? null : Number(f.get(k)));
+      const corners = (w) => ({ fl: num(`${w}.fl`), fr: num(`${w}.fr`), rl: num(`${w}.rl`), rr: num(`${w}.rr`) });
+      const info = {
+        name: f.get("name"), driver: f.get("driver"), vehicle: f.get("vehicle"), track: f.get("track"), notes: f.get("notes"),
+        tyres: { compound: f.get("compound"), unit: f.get("unit"), cold: corners("cold"), hot: corners("hot") },
+      };
+      const status = $("#details-status");
+      status.textContent = "Saving…";
+      status.className = "muted";
+      try {
+        const r = await api(`${base}/info`, {
+          method: "PUT", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ info, fill_day: f.get("fill_day") === "on" }),
+        });
+        if (!alive) return;
+        detail = r.detail;
+        $("#head").innerHTML = headHtml(detail);
+        const others = r.filled ? ` · filled ${r.filled} other session${r.filled > 1 ? "s" : ""} from ${fmt.date(detail.date)}` : "";
+        renderDetails(false, `Saved${others}`);
+      } catch (err) {
+        status.textContent = err.message;
+        status.className = "error";
+      }
+    });
+  }
+
+  function render() {
+    const d = detail;
+    let html = `<div id="head">${headHtml(d)}</div>`;
     if (d.kind !== "session") {
       html += `<div class="card"><h2>${d.kind === "log" ? "This file is the logger's debug log, not a session" : "This file couldn't be read"}</h2>
         ${d.error ? `<p class="error">${esc(d.error)}</p>` : ""}
@@ -313,7 +367,8 @@ function sessionView(view, name) {
         They're removed before reading; the downloaded file is unchanged.</summary>
         <pre class="log" style="margin-top:12px">${esc(d.text)}</pre></details></div>`;
     }
-    html += `<div class="stats">
+    html += `<div id="details"></div>
+    <div class="stats">
       <div class="stat"><div class="k">Timed laps</div><div class="v">${full.length}</div></div>
       <div class="stat"><div class="k">Best lap</div><div class="v">${best ? fmt.lap(best.duration_ms) : "–"}</div></div>
       <div class="stat"><div class="k">Duration</div><div class="v">${fmt.dur(d.duration_s * 1000)}</div></div>
@@ -340,6 +395,7 @@ function sessionView(view, name) {
       </div>
     </div>`;
     view.innerHTML = html;
+    renderDetails(false);
 
     const wanted = store.get("lapanalysis.channels", DEFAULT_CHANNELS);
     view.querySelectorAll("#channels input").forEach((cb) => {
@@ -508,6 +564,67 @@ function sessionView(view, name) {
     destroyCharts();
     window.removeEventListener("resize", onResize);
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// session details
+
+const CORNERS = ["fl", "fr", "rl", "rr"];
+
+function tyreSummary(t) {
+  const set = (c) => (CORNERS.some((k) => c[k] != null) ? CORNERS.map((k) => c[k] ?? "–").join(" / ") : "");
+  const cold = set(t.cold), hot = set(t.hot);
+  const parts = [t.compound, cold && `cold ${cold}`, hot && `hot ${hot}`].filter(Boolean);
+  return parts.join(" · ") + (cold || hot ? ` ${t.unit || "psi"}` : "");
+}
+
+function detailsView(d, flash) {
+  const i = d.info;
+  const rows = [["Driver", d.driver], ["Car", d.vehicle], ["Track", d.venue], ["Tyres", tyreSummary(i.tyres)]].filter(([, v]) => v);
+  const empty = !rows.length && !i.notes && !i.name;
+  return `<div class="card">
+    <div class="row"><h2 style="margin:0">Details</h2>
+      ${flash ? `<span class="muted small">${esc(flash)}</span>` : ""}
+      <span class="spacer"></span><button id="edit-details">${empty ? "Add details" : "Edit"}</button></div>
+    ${empty ? `<p class="muted" style="margin:8px 0 0">Give this session a name, and record who drove which car, tyres and notes.</p>`
+      : `${rows.length ? `<dl class="details">${rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl>` : ""}
+         ${i.notes ? `<div class="notes">${esc(i.notes)}</div>` : ""}`}
+  </div>`;
+}
+
+function detailsForm(d) {
+  const i = d.info, t = i.tyres, s = d.suggestions, n = d.same_day;
+  const list = (id, vals) => `<datalist id="${id}">${vals.map((v) => `<option value="${esc(v)}">`).join("")}</datalist>`;
+  const text = (name, value, placeholder, listId) =>
+    `<input name="${name}" value="${esc(value)}" placeholder="${esc(placeholder)}" maxlength="120" autocomplete="off"${listId ? ` list="${listId}"` : ""}>`;
+  const pressure = (when, k) =>
+    `<td><input type="number" name="${when}.${k}" value="${t[when][k] ?? ""}" step="0.1" min="0" max="100" inputmode="decimal" aria-label="${when} ${k.toUpperCase()}"></td>`;
+  return `<form class="card" id="details-form">
+    <h2>Details</h2>
+    <div class="form-grid">
+      <label class="field wide">Session name ${text("name", i.name, "e.g. Practice 2")}</label>
+      <label class="field">Driver ${text("driver", i.driver, d.driver || "Who drove", "dl-drivers")}</label>
+      <label class="field">Car ${text("vehicle", i.vehicle, d.vehicle || "e.g. Miata NA", "dl-vehicles")}</label>
+      <label class="field">Track ${text("track", i.track, d.logger_track || "Track name", "dl-tracks")}</label>
+      <label class="field">Tyres ${text("compound", t.compound, "Compound, e.g. Hoosier A7", "dl-compounds")}</label>
+      <div class="field wide">Pressures
+        <table class="pressures">
+          <thead><tr><th></th>${CORNERS.map((k) => `<th>${k.toUpperCase()}</th>`).join("")}<th></th></tr></thead>
+          <tbody>
+            <tr><th>Cold</th>${CORNERS.map((k) => pressure("cold", k)).join("")}
+              <td rowspan="2"><select name="unit" aria-label="Pressure unit"><option value="psi">psi</option><option value="bar"${t.unit === "bar" ? " selected" : ""}>bar</option></select></td></tr>
+            <tr><th>Hot</th>${CORNERS.map((k) => pressure("hot", k)).join("")}</tr>
+          </tbody>
+        </table>
+      </div>
+      <label class="field wide">Notes <textarea name="notes" rows="4" placeholder="Setup changes, what you worked on, how it felt">${esc(i.notes)}</textarea></label>
+    </div>
+    ${n ? `<label class="check"><input type="checkbox" name="fill_day" checked>
+      Also fill driver, car and track on the ${n} other session${n > 1 ? "s" : ""} from ${fmt.date(d.date)} that don't have them yet</label>` : ""}
+    <div class="row" style="margin-top:14px"><button class="primary" type="submit">Save</button>
+      <button type="button" id="cancel-details">Cancel</button><span id="details-status" class="muted"></span></div>
+    ${list("dl-drivers", s.drivers)}${list("dl-vehicles", s.vehicles)}${list("dl-tracks", s.tracks)}${list("dl-compounds", s.compounds)}
+  </form>`;
 }
 
 // ---------------------------------------------------------------------------------------

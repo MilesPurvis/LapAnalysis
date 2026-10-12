@@ -194,7 +194,10 @@ operation that looks like delete), `0x6xxxx` (configuration and firmware writes)
 | `venue_type`, `mode`, `trk_type`, `maxvel`, `device`, `ptype`, `ptime`, `pdist`, `pmaxv` | Mostly empty or *unknown* |
 
 LapAnalysis stores each row in `library/index.json` when it downloads the file, so the
-library can show track and date without opening every session.
+library can show track and date without opening every session. The details you add on the
+session page (name, driver, car, track, tyres, notes) go in the same entry, and they win over
+what the logger recorded. The file on disk keeps its logger name; downloads from the UI get
+a readable one, like `2026-09-07 Grand Bend - Practice 2 (a_0124).xrz`.
 
 ---
 
@@ -303,6 +306,7 @@ downloaded, and the session page marks it "Repaired" and shows what was removed.
 |---|---|
 | `app/src/aim.rs` | Protocol client: keep-alive thread, framing, sessions, commands, CSV parsing |
 | `app/src/library.rs` | `library/` folder: atomic saves + `index.json`, debug-log repair, libxrk parsing (cached), chart and map data |
+| `app/src/info.rs` | Your session details (name, driver, car, track, tyres and pressures, notes) and their validation |
 | `app/src/web.rs` | axum server: JSON API, background download job, embedded assets |
 | `app/src/fake.rs` | A fake Solo implementing the logger side of the protocol, for tests and UI work |
 | `app/static/` | The UI: plain JS, uPlot for charts (vendored so it works offline) |
@@ -326,7 +330,8 @@ following the cursor.
 | `GET /api/device/sessions` | The logger's session list, marked with what's already downloaded |
 | `POST /api/device/download` `{names}` / `GET` | Start a download job / poll its progress |
 | `GET /api/library` | Downloaded sessions |
-| `GET /api/library/{name}` | Session detail: laps, channels, metadata, repair info |
+| `GET /api/library/{name}` | Session detail: laps, channels, metadata, your details, repair info |
+| `PUT /api/library/{name}/info` `{info, fill_day}` | Save your details; `fill_day` copies driver/car/track to that day's sessions that have none |
 | `GET /api/library/{name}/series?id=&lap=&points=` | One channel, downsampled |
 | `GET /api/library/{name}/track?lap=&points=` | GPS track with speed |
 | `GET /api/library/{name}/raw` | The file as downloaded |

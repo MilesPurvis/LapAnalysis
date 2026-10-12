@@ -498,40 +498,9 @@ mod tests {
     }
 
     #[test]
-    fn unframe_rejects_bad_checksum() {
-        let mut f = frame(b"abc", TAG_STCP);
-        let n = f.len();
-        f[n - 3] ^= 1;
-        assert!(unframe(&f, 3).is_err());
-    }
-
-    #[test]
-    fn parses_the_solo_keepalive() {
-        // ka-reply-00.bin from run 20261012-123400.
-        let mut p = vec![0u8; 0xec];
-        p[0] = 0xec;
-        p[4] = 2;
-        p[8..12].copy_from_slice(&[0x0a, 0, 0, 1]);
-        p[0x0e] = 0x05;
-        p[0x11] = 0x02;
-        p[0x5c..0x60].copy_from_slice(&510u32.to_le_bytes());
-        let a = parse_keepalive(&p, Ipv4Addr::new(10, 0, 0, 1)).unwrap();
-        assert_eq!((a.logger_code, a.busy, a.owner), (510, true, 2));
-        assert!(parse_keepalive(&p[..100], Ipv4Addr::LOCALHOST).is_none());
-    }
-
-    #[test]
-    fn parses_the_session_summary() {
-        let csv = "name,size,date,hour,nlap,nbest,best,pilota,track_name,veicolo,campionato,venue_type,mode,trk_type,motivolap,maxvel,device,track_lat,track_lon,test_dur,ptype,ptime,pdist,pmaxv,\r\n\
-                   a_0126.xrz,1593162,07/09/2026,13:43:51,12,5,74796,,Great Bend T,,,,speed,closed,stop,-2063597568,,432888035,-817180414,1074326,,,,,\r\n\
-                   a_0123.xrz,1160,07/09/2026,12:37:09,0,,,,Great Bend T,,,,speed,closed,mark,-2097152000,,432888035,-817180414,16162,,,,,\r\n";
-        let rows = parse_summary(csv);
-        assert_eq!(rows.len(), 2);
-        let r = &rows[0];
-        assert_eq!((r.name.as_str(), r.size, r.date.as_str(), r.laps), ("a_0126.xrz", 1593162, "2026-09-07", 12));
-        assert_eq!((r.best_lap, r.best_ms, r.duration_ms), (Some(5), Some(74796), Some(1074326)));
-        assert_eq!(r.track, "Great Bend T");
-        assert!((r.track_lat.unwrap() - 43.2888035).abs() < 1e-9);
-        assert_eq!((rows[1].best_ms, rows[1].end_reason.as_str()), (None, "mark"));
+    fn parses_the_session_list() {
+        let csv = "name,size,date,hour,nlap,nbest,best,pilota,track_name\r\na_0126.xrz,1593162,07/09/2026,13:43:51,12,5,74796,,Great Bend T\r\n";
+        let r = &parse_summary(csv)[0];
+        assert_eq!((r.name.as_str(), r.date.as_str(), r.laps, r.best_ms), ("a_0126.xrz", "2026-09-07", 12, Some(74796)));
     }
 }

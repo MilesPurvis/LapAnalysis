@@ -7,11 +7,12 @@ use anyhow::{anyhow, Context};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::aim::{DeviceSession, DeviceStatus, Endpoint, KeepAlive, Session};
+use crate::info::SessionInfo;
 use crate::library::Library;
 
 pub struct App {
@@ -61,6 +62,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/device/download", get(download_status).post(download_start))
         .route("/api/library", get(library_list))
         .route("/api/library/{name}", get(library_detail))
+        .route("/api/library/{name}/info", put(library_update_info))
         .route("/api/library/{name}/series", get(library_series))
         .route("/api/library/{name}/track", get(library_track))
         .route("/api/library/{name}/raw", get(library_raw))
@@ -243,6 +245,35 @@ async fn library_detail(State(app): State<Arc<App>>, Path(name): Path<String>) -
 }
 
 #[derive(Deserialize)]
+struct InfoUpdate {
+    info: SessionInfo,
+    /// Also fill driver/car/track on other sessions from the same day that have none.
+    #[serde(default)]
+    fill_day: bool,
+}
+
+#[derive(Serialize)]
+struct InfoSaved {
+    filled: usize,
+    detail: crate::library::SessionDetail,
+}
+
+async fn library_update_info(
+    State(app): State<Arc<App>>,
+    Path(name): Path<String>,
+    Json(req): Json<InfoUpdate>,
+) -> ApiResult<InfoSaved> {
+    let a = app.clone();
+    blocking(move || {
+        let filled = a.lib.update_info(&name, req.info, req.fill_day)?;
+        Ok(InfoSaved { filled, detail: a.lib.detail(&name)? })
+    })
+    .await
+    .map(Json)
+    .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))
+}
+
+#[derive(Deserialize)]
 struct SeriesQuery {
     id: String,
     lap: Option<i32>,
@@ -275,11 +306,27 @@ async fn library_track(
     Ok(Json(blocking(move || a.lib.track(&name, q.lap, points)).await?))
 }
 
+/// `attachment` with an ASCII fallback name plus the UTF-8 one (RFC 6266), since session
+/// details can contain any characters.
+fn content_disposition(file_name: &str) -> String {
+    let ascii: String = file_name
+        .chars()
+        .filter(|c| *c != '"' && *c != '\\')
+        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '_' })
+        .collect();
+    let encoded: String = file_name
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect();
+    format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
+}
+
 async fn library_raw(State(app): State<Arc<App>>, Path(name): Path<String>) -> Result<Response, ApiError> {
     let a = app.clone();
-    let n = name.clone();
-    let data = blocking(move || a.lib.raw(&n)).await.map_err(|e| ApiError(StatusCode::NOT_FOUND, e))?;
-    let disposition = format!("attachment; filename=\"{}\"", name.replace('"', ""));
+    let (data, file_name) = blocking(move || Ok((a.lib.raw(&name)?, a.lib.download_name(&name))))
+        .await
+        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e))?;
+    let disposition = content_disposition(&file_name);
     Ok(([(header::CONTENT_TYPE, "application/octet-stream".to_string()), (header::CONTENT_DISPOSITION, disposition)], data)
         .into_response())
 }
