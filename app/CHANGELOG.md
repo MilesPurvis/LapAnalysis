@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/MilesPurvis/LapAnalysis/compare/v0.2.0...v0.3.0) (2026-10-12)
+
+
+### Features
+
+* compare laps across sessions, drivers and cars ([7ced0ce](https://github.com/MilesPurvis/LapAnalysis/commit/7ced0cee33b9fd5c0901783a41235b059e360abd))
+
 ## [0.2.0](https://github.com/MilesPurvis/LapAnalysis/compare/v0.1.0...v0.2.0) (2026-10-12)
 
 
