@@ -284,11 +284,11 @@ function loggerView(view) {
 const DEFAULT_CHANNELS = ["GPS Speed", "LateralAcc", "InlineAcc"];
 
 function sessionView(view, name) {
-  let alive = true, detail = null, lap = null, charts = [], track = null, markerT = null;
+  let alive = true, detail = null, lap = null, charts = [], track = null, markerT = null, theory = null;
   const base = `/api/library/${encodeURIComponent(name)}`;
   view.innerHTML = `<div class="empty">Loading ${esc(name)}…</div>`;
 
-  const onResize = () => { sizeCharts(); drawMap(); };
+  const onResize = () => { sizeCharts(); drawMap(); theory?.redraw(); };
   window.addEventListener("resize", onResize);
 
   api(base).then((d) => {
@@ -374,7 +374,7 @@ function sessionView(view, name) {
       <div class="stat"><div class="k">Best lap</div><div class="v">${best ? fmt.lap(best.duration_ms) : "–"}</div></div>
       <div class="stat"><div class="k">Duration</div><div class="v">${fmt.dur(d.duration_s * 1000)}</div></div>
       <div class="stat"><div class="k">Top speed</div><div class="v" id="top-speed">–</div></div>
-      <div class="stat"><div class="k">Channels</div><div class="v">${d.channels.length}</div></div>
+      ${d.has_gps ? `<a class="stat" href="#" id="theory-stat"><div class="k">Theoretical best</div><div class="v">–</div></a>` : ""}
     </div>
     <div class="laps" id="laps">
       <button data-lap="" class="selected">Whole session</button>
@@ -394,9 +394,14 @@ function sessionView(view, name) {
         </div>
         <div id="charts"></div>
       </div>
-    </div>`;
+    </div>
+    <div id="theory"></div>`;
     view.innerHTML = html;
     renderDetails(false);
+    if (d.has_gps) {
+      theory = theoryCard($("#theory"), d, (r) => { $("#theory-stat .v").textContent = r ? fmt.lap(r.theoretical_ms) : "–"; });
+      $("#theory-stat").addEventListener("click", (e) => { e.preventDefault(); $("#theory").scrollIntoView({ behavior: "smooth" }); });
+    }
 
     const wanted = store.get("lapanalysis.channels", DEFAULT_CHANNELS);
     view.querySelectorAll("#channels input").forEach((cb) => {
@@ -556,8 +561,134 @@ function sessionView(view, name) {
   return () => {
     alive = false;
     destroyCharts();
+    theory?.stop();
     window.removeEventListener("resize", onResize);
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// theoretical best
+
+// The session-page card: pick sessions at this track, see the fastest time through each
+// corner and where it was set. `onResult` gets the result (or null) for the stats tile.
+function theoryCard(el, d, onResult) {
+  let alive = true, catalog = [], picked = [d.name], result = null;
+  el.innerHTML = `<div class="card"><h2>Theoretical best</h2><div class="empty">Working it out…</div></div>`;
+  api("/api/laps").then((c) => { if (alive) { catalog = c; load(); } }).catch((e) => show(e.message));
+
+  const me = () => catalog.find((s) => s.name === d.name);
+  const atTrack = () => catalog.filter((s) => s.name === d.name || kmBetween(s.position, me()?.position) < 3);
+  const sameCar = (s) => d.vehicle && s.vehicle.toLowerCase() === d.vehicle.toLowerCase();
+  const fullLaps = (s) => s.laps.filter((l) => l.kind === "full").length;
+
+  async function load() {
+    try {
+      // This session first: it decides the track.
+      const order = [d.name, ...picked.filter((f) => f !== d.name)];
+      result = await api(`/api/theoretical?sessions=${encodeURIComponent(order.join(","))}`);
+    } catch (e) {
+      result = null;
+      if (alive) show(e.message);
+      return;
+    }
+    if (alive) show();
+  }
+
+  function show(error) {
+    onResult(result);
+    const sessions = atTrack();
+    const presets = [
+      ["This session", [d.name]],
+      ...(d.vehicle ? [[`Same car (${d.vehicle})`, sessions.filter(sameCar).map((s) => s.name)]] : []),
+      ["All at this track", sessions.map((s) => s.name)],
+    ];
+    const picker = `<div class="row" style="margin-top:12px;gap:8px">
+        <span class="muted small">Include</span>
+        ${presets.map(([label, files], i) => `<button class="small-btn" data-preset="${i}">${esc(label)}</button>`).join("")}</div>
+      <div class="theory-sessions">${sessions.map((s) => `<label class="check">
+        <input type="checkbox" value="${esc(s.name)}"${picked.includes(s.name) ? " checked" : ""}${s.name === d.name ? " disabled" : ""}>
+        <span><strong>${esc(s.title || s.name)}</strong> <span class="muted small">${[fmt.started(s.date, s.time), s.driver, s.vehicle, `${fullLaps(s)} full laps`].filter(Boolean).map(esc).join(" · ")}</span></span>
+      </label>`).join("")}</div>`;
+    if (!result) {
+      el.innerHTML = `<div class="card"><h2>Theoretical best</h2><p class="muted">${esc(error || "Nothing to show.")}</p>${picker}</div>`;
+      bind(presets);
+      return;
+    }
+    const r = result, b = r.best;
+    const gain = b.lap_ms - r.theoretical_ms;
+    const ranked = r.sections.filter((x) => x.best_lap_loss_ms > 50).sort((x, y) => y.best_lap_loss_ms - x.best_lap_loss_ms);
+    const lapLabel = (h) => `Lap ${h.lap}${r.sessions.length > 1 || h.file !== d.name ? ` of ${esc(h.title || h.file)}` : ""}`;
+    const summary = ranked.length
+      ? `Most to gain in <strong>${ranked[0].name}</strong>: ${lapLabel(r.holders[ranked[0].holder])} is ${(ranked[0].best_lap_loss_ms / 1000).toFixed(3)} s quicker there than your best lap.`
+        + (ranked[1] ? ` Next is ${ranked[1].name} (${lapLabel(r.holders[ranked[1].holder])}, ${(ranked[1].best_lap_loss_ms / 1000).toFixed(3)} s).` : "")
+      : "Your best lap is within 0.05 s of the fastest time in every corner.";
+    const compareWith = [b, ...r.holders.filter((h) => h.file !== b.file || h.lap !== b.lap)].slice(0, MAX_COMPARE);
+    el.innerHTML = `<div class="card">
+      <div class="row"><h2 style="margin:0">Theoretical best</h2>
+        <span class="muted small">from ${r.laps} full lap${r.laps === 1 ? "" : "s"} in ${r.sessions.length} session${r.sessions.length === 1 ? "" : "s"}</span>
+        <span class="spacer"></span>
+        ${compareWith.length > 1 ? `<a class="button" href="#/compare/${compareWith.map((h) => `${encodeURIComponent(h.file)}:${h.lap}`).join(",")}">Compare best lap with these</a>` : ""}</div>
+      <div class="theory-head"><span class="theory-time">${fmt.lap(r.theoretical_ms)}</span>
+        <span class="muted">${fmtGap(-gain)} vs best lap ${fmt.lap(b.lap_ms)} (${lapLabel(b)})</span></div>
+      <p style="margin:6px 0 0">${summary}</p>
+      ${r.skipped.length ? `<p class="muted small">Left out (different track or no GPS): ${r.skipped.map(esc).join(", ")}</p>` : ""}
+      ${picker}
+      <div class="theory-grid">
+        <div><canvas id="theory-map"></canvas><p class="muted small" style="margin:6px 0 0">Corners are numbered from the start/finish line.</p></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Corner</th><th class="num">Distance</th><th class="num">Fastest</th><th>Set on</th><th class="num">Best lap loses</th></tr></thead>
+          <tbody>${r.sections.map((x, j) => {
+            const h = r.holders[x.holder];
+            const own = h.file === b.file && h.lap === b.lap;
+            return `<tr><td><span class="swatch" style="background:${PALETTE[j % PALETTE.length]}"></span> ${x.name}</td>
+              <td class="num">${Math.round(x.start_m)}–${Math.round(x.end_m)} m</td>
+              <td class="num">${(x.best_ms / 1000).toFixed(3)}</td>
+              <td>${lapLabel(h)}${h.driver && h.driver !== b.driver ? ` <span class="muted small">${esc(h.driver)}</span>` : ""}</td>
+              <td class="num">${own ? `<span class="chip good">best</span>` : `+${(x.best_lap_loss_ms / 1000).toFixed(3)}`}</td></tr>`;
+          }).join("")}</tbody></table></div>
+      </div></div>`;
+    bind(presets);
+    drawMapNow();
+  }
+
+  function bind(presets) {
+    el.querySelectorAll("[data-preset]").forEach((btn) => btn.addEventListener("click", () => {
+      picked = presets[Number(btn.dataset.preset)][1];
+      load();
+    }));
+    el.querySelectorAll(".theory-sessions input").forEach((cb) => cb.addEventListener("change", () => {
+      picked = [...el.querySelectorAll(".theory-sessions input:checked")].map((x) => x.value);
+      load();
+    }));
+  }
+
+  function drawMapNow() {
+    const canvas = $("#theory-map", el);
+    if (!canvas || !result) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+    const r = result, proj = makeProjection(w, h, [r.lat], [r.lon], 24);
+    if (!proj) return;
+    ctx.lineWidth = 4;
+    ctx.lineCap = "round";
+    for (let i = 1; i < r.lat.length; i++) {
+      if ((!r.lat[i] && !r.lon[i]) || (!r.lat[i - 1] && !r.lon[i - 1])) continue;
+      const [ax, ay] = proj(r.lat[i - 1], r.lon[i - 1]), [bx, by] = proj(r.lat[i], r.lon[i]);
+      ctx.strokeStyle = PALETTE[r.section_of[i] % PALETTE.length];
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    }
+    ctx.font = "600 12px -apple-system, BlinkMacSystemFont, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (const x of r.sections) {
+      const [px, py] = proj(r.lat[x.apex], r.lon[x.apex]);
+      ctx.fillStyle = cssVar("--surface");
+      ctx.beginPath(); ctx.arc(px, py, 11, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = cssVar("--text");
+      ctx.fillText(x.name, px, py + 0.5);
+    }
+  }
+
+  return { redraw: drawMapNow, stop: () => { alive = false; } };
 }
 
 // ---------------------------------------------------------------------------------------

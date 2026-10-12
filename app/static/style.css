@@ -241,6 +241,16 @@ label.check { display: flex; gap: 8px; align-items: center; margin-top: 12px; fo
 .laps button:disabled { opacity: 0.4; }
 .vals { display: flex; gap: 12px; font-variant-numeric: tabular-nums; font-weight: 500; }
 
+a.stat { text-decoration: none; }
+a.stat:hover { border-color: var(--muted); }
+.theory-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.theory-time { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.theory-sessions { display: grid; gap: 2px; margin-top: 8px; }
+.theory-sessions label.check { margin-top: 4px; }
+.theory-grid { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; gap: 16px; margin-top: 16px; align-items: start; }
+.theory-grid canvas { width: 100%; height: 300px; display: block; }
+@media (max-width: 860px) { .theory-grid { grid-template-columns: 1fr; } }
+
 pre.log {
   max-height: 520px; overflow: auto; margin: 0;
   font: 12px/1.5 var(--mono); white-space: pre-wrap;

@@ -306,6 +306,7 @@ downloaded, and the session page marks it "Repaired" and shows what was removed.
 |---|---|
 | `app/src/aim.rs` | Protocol client: keep-alive thread, framing, sessions, commands, CSV parsing |
 | `app/src/library.rs` | `library/` folder: atomic saves + `index.json`, debug-log repair, libxrk parsing (cached), chart and map data |
+| `app/src/best.rs` | Theoretical best lap: corner detection and the fastest time through each corner |
 | `app/src/compare.rs` | Lap comparison: distance alignment, time delta, channels resampled onto one grid |
 | `app/src/info.rs` | Your session details (name, driver, car, track, tyres and pressures, notes) and their validation |
 | `app/src/web.rs` | axum server: JSON API, background download job, embedded assets |
@@ -332,6 +333,16 @@ corners, then sampled at the same 1,200 distances. At each one, the lap's elapse
 the reference's is the time gained or lost there, and channels are read at that moment. Laps
 from other sessions are offered when their first GPS fix is within 3 km of the reference's.
 
+**Theoretical best:** only full laps count (no out- or in-laps), from the sessions you tick,
+which can mix cars and drivers at the same track. Laps whose GPS distance is more than 5% off
+the median are dropped as bad GPS or a cut track. On the fastest lap's speed trace, smoothed
+over ~15 m, every minimum that stands out by at least 6 km/h is a corner, and minima closer
+than 80 m count as one. Sections run between the fastest points separating two corners, the
+first from the start/finish line, so they're numbered T1, T2… from the line, not by the
+track's official turn numbers. Each lap is timed through each section (lined up by distance,
+as in Compare), and the fastest times are added up. Speed carried across the line from the
+previous lap counts toward T1, so a good exit from the last corner shows up there.
+
 | Endpoint | Returns |
 |---|---|
 | `GET /api/device` | Logger status from the keep-alive |
@@ -343,6 +354,7 @@ from other sessions are offered when their first GPS fix is within 3 km of the r
 | `GET /api/library/{name}/series?id=&lap=&points=` | One channel, downsampled |
 | `GET /api/library/{name}/track?lap=&points=` | GPS track with speed |
 | `GET /api/library/{name}/raw` | The file as downloaded |
+| `GET /api/theoretical?sessions=…` | Theoretical best over the full laps of those sessions (the first decides the track) |
 | `GET /api/laps` | Every session with GPS, its laps and first GPS fix, for picking laps to compare |
 | `GET /api/compare?laps=file:lap,…&channels=…&points=` | Laps lined up by distance: time delta to the first (reference) lap, channels, racing lines |
 

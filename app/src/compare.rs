@@ -102,7 +102,7 @@ pub fn compare(lib: &Library, wanted: &[(String, i32)], channels: &[String], poi
 }
 
 /// Elapsed time and distance covered at each GPS fix of a lap.
-struct Trace {
+pub(crate) struct Trace {
     t: Vec<f64>,
     d: Vec<f64>,
 }
@@ -121,33 +121,33 @@ impl Trace {
         Self { t: t.to_vec(), d }
     }
 
-    fn length(&self) -> f64 {
+    pub(crate) fn length(&self) -> f64 {
         self.d.last().copied().unwrap_or(0.0)
     }
 
     /// When the lap reached a point `d` metres along a lap `ref_len` long. Laps are scaled to
     /// the reference length so a slightly different line doesn't drift the comparison.
-    fn time_at(&self, d: f64, ref_len: f64) -> f64 {
+    pub(crate) fn time_at(&self, d: f64, ref_len: f64) -> f64 {
         interp(&self.d, &self.t, d * self.length() / ref_len)
     }
 }
 
-struct PreparedLap {
-    session: LibraryItem,
-    lap: i32,
-    lap_ms: i64,
+pub(crate) struct PreparedLap {
+    pub(crate) session: LibraryItem,
+    pub(crate) lap: i32,
+    pub(crate) lap_ms: i64,
     start_ms: i64,
     loaded: Arc<Loaded>,
     /// GPS fixes in seconds from the lap start, with a fix pinned at both ends of the lap.
-    gps_t: Vec<f64>,
+    pub(crate) gps_t: Vec<f64>,
     speed_kmh: Vec<f64>,
-    lat: Vec<f64>,
-    lon: Vec<f64>,
-    trace: Trace,
+    pub(crate) lat: Vec<f64>,
+    pub(crate) lon: Vec<f64>,
+    pub(crate) trace: Trace,
 }
 
 impl PreparedLap {
-    fn new(lib: &Library, file: &str, lap: i32) -> Result<Self> {
+    pub(crate) fn new(lib: &Library, file: &str, lap: i32) -> Result<Self> {
         let loaded = lib.load(file)?;
         let x = loaded.xrk.as_ref().with_context(|| format!("{file} isn't a session"))?;
         let g = x.gps.as_ref().with_context(|| format!("{file} has no GPS"))?;
@@ -202,7 +202,7 @@ impl PreparedLap {
     }
 
     /// A channel's value `t` seconds into the lap.
-    fn sample(&self, name: &str, t: f64) -> Option<f64> {
+    pub(crate) fn sample(&self, name: &str, t: f64) -> Option<f64> {
         if name == GPS_SPEED {
             return Some(interp(&self.gps_t, &self.speed_kmh, t));
         }
@@ -223,7 +223,7 @@ impl PreparedLap {
 }
 
 /// Linear interpolation over non-decreasing `xs`, clamped at the ends.
-fn interp(xs: &[f64], ys: &[f64], x: f64) -> f64 {
+pub(crate) fn interp(xs: &[f64], ys: &[f64], x: f64) -> f64 {
     let i = xs.partition_point(|&v| v < x);
     if i == 0 {
         return ys[0];
