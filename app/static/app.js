@@ -351,7 +351,7 @@ function sessionView(view, name) {
 
   function render() {
     const d = detail;
-    let html = `<div id="head">${headHtml(d)}</div>`;
+    let html = `<div id="head">${headHtml(d)}</div>${d.kind === "session" ? `<p class="weather-line muted" id="weather">Weather: loading…</p>` : ""}`;
     if (d.kind !== "session") {
       html += `<div class="card"><h2>${d.kind === "log" ? "This file is the logger's debug log, not a session" : "This file couldn't be read"}</h2>
         ${d.error ? `<p class="error">${esc(d.error)}</p>` : ""}
@@ -361,13 +361,6 @@ function sessionView(view, name) {
     }
     const full = d.laps.filter((l) => l.kind === "full");
     const best = d.laps.find((l) => l.best);
-    if (d.repaired_bytes) {
-      const lines = d.text ? d.text.split("\n").length : 0;
-      html += `<div class="card"><details><summary><strong>Repaired:</strong>
-        the logger wrote ${lines} lines of its debug log (${fmt.bytes(d.repaired_bytes)}) into this file.
-        They're removed before reading; the downloaded file is unchanged.</summary>
-        <pre class="log" style="margin-top:12px">${esc(d.text)}</pre></details></div>`;
-    }
     html += `<div id="details"></div>
     <div class="stats">
       <div class="stat"><div class="k">Timed laps</div><div class="v">${full.length}</div></div>
@@ -398,6 +391,12 @@ function sessionView(view, name) {
     <div id="theory"></div>`;
     view.innerHTML = html;
     renderDetails(false);
+    api(`${base}/weather`).then((w) => {
+      const s = alive && weatherSummary(w);
+      if (s) $("#weather").textContent = `Weather: ${s.long}`;
+    }).catch(() => {
+      if (alive) $("#weather").textContent = "Weather: not fetched yet. Open this session while you have internet.";
+    });
     if (d.has_gps) {
       theory = theoryCard($("#theory"), d, (r) => { $("#theory-stat .v").textContent = r ? fmt.lap(r.theoretical_ms) : "–"; });
       $("#theory-stat").addEventListener("click", (e) => { e.preventDefault(); $("#theory").scrollIntoView({ behavior: "smooth" }); });
@@ -819,11 +818,12 @@ function compareView(view, arg) {
     const ref = result.laps[0];
     $("#result").innerHTML = `
       <div class="card"><h2>Summary</h2><div class="table-wrap"><table>
-        <thead><tr><th></th><th>Lap</th><th>Driver</th><th>Car</th><th class="num">Time</th><th class="num">Gap</th><th class="num">Distance</th></tr></thead>
+        <thead><tr><th></th><th>Lap</th><th>Driver</th><th>Car</th><th>Weather</th><th class="num">Time</th><th class="num">Gap</th><th class="num">Distance</th></tr></thead>
         <tbody>${result.laps.map((l, i) => {
           const lap = lapOf(l.name, l.lap) || { num: l.lap, kind: "full" };
           return `<tr><td><span class="swatch" style="background:${LAP_COLORS[i]}"></span></td>
             <td>${esc(l.title || l.name)} · ${lapName(lap)}</td><td>${esc(l.driver) || "–"}</td><td>${esc(l.vehicle) || "–"}</td>
+            <td class="wx muted" data-file="${esc(l.name)}">…</td>
             <td class="num">${fmt.lap(l.lap_ms)}</td><td class="num">${i ? fmtGap(l.lap_ms - ref.lap_ms) : "ref"}</td>
             <td class="num">${Math.round(l.length_m).toLocaleString()} m</td></tr>`;
         }).join("")}</tbody></table></div></div>
@@ -842,6 +842,12 @@ function compareView(view, arg) {
       store.set("lapanalysis.compareChannels", [...view.querySelectorAll("#cmp-channels input:checked")].map((x) => x.value));
       load();
     }));
+    for (const file of new Set(result.laps.map((l) => l.name))) {
+      const cells = [...view.querySelectorAll(".wx")].filter((td) => td.dataset.file === file);
+      api(`/api/library/${encodeURIComponent(file)}/weather`)
+        .then((w) => { const s = weatherSummary(w); cells.forEach((td) => (td.textContent = s ? s.short : "–")); })
+        .catch(() => cells.forEach((td) => (td.textContent = "–")));
+    }
     const box = $("#cmp-charts");
     addChart(box, "Time gained / lost", "s", result.laps.map((l) => l.delta_s), (v) => fmtGap(v * 1000));
     for (const name of chans) addChart(box, name, result.units[name] || "", result.laps.map((l) => l.channels[name]), (v) => fmt.num(v));
@@ -931,6 +937,46 @@ function compareView(view, arg) {
     alive = false;
     destroyCharts();
     window.removeEventListener("resize", onResize);
+  };
+}
+
+// ---------------------------------------------------------------------------------------
+// weather
+
+// WMO weather codes, as Open-Meteo reports them.
+function skyText(code) {
+  if (code == null) return "";
+  if (code === 0) return "clear";
+  if (code === 1) return "mainly clear";
+  if (code === 2) return "partly cloudy";
+  if (code === 3) return "overcast";
+  if (code <= 48) return "fog";
+  if (code <= 57) return "drizzle";
+  if (code <= 67) return "rain";
+  if (code <= 77) return "snow";
+  if (code <= 82) return "rain showers";
+  if (code <= 86) return "snow showers";
+  return "thunderstorm";
+}
+
+// One line for the hours a session covers: `long` for the session page, `short` for tables.
+function weatherSummary(w) {
+  const hours = w?.hours || [];
+  const vals = (k) => hours.map((h) => h[k]).filter((v) => v != null);
+  const temps = vals("temp_c");
+  if (!temps.length) return null;
+  const [lo, hi] = [Math.round(Math.min(...temps)), Math.round(Math.max(...temps))];
+  const temp = lo === hi ? `${lo} °C` : `${lo}–${hi} °C`;
+  const codes = vals("code");
+  const sky = skyText(codes.sort((a, b) => codes.filter((c) => c === b).length - codes.filter((c) => c === a).length)[0]);
+  const rain = vals("precip_mm").reduce((a, b) => a + b, 0);
+  const wet = rain > 0 ? `${rain.toFixed(1)} mm rain` : "dry";
+  const wind = vals("wind_kmh"), gust = vals("gust_kmh"), hum = vals("humidity");
+  const windText = wind.length ? `wind ${Math.round(Math.max(...wind))} km/h${gust.length ? ` (gusts ${Math.round(Math.max(...gust))})` : ""}` : "";
+  const humText = hum.length ? `${Math.round(hum.reduce((a, b) => a + b, 0) / hum.length)}% humidity` : "";
+  return {
+    long: [temp, sky, wet, windText, humText].filter(Boolean).join(" · "),
+    short: [temp, rain > 0 ? wet : sky].filter(Boolean).join(", "),
   };
 }
 

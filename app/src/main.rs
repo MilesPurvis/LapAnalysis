@@ -6,6 +6,7 @@ mod compare;
 mod fake;
 mod info;
 mod library;
+mod weather;
 mod web;
 
 use std::collections::HashMap;
