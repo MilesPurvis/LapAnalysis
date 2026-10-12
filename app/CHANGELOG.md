@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/MilesPurvis/LapAnalysis/compare/v0.4.0...v0.5.0) (2026-10-12)
+
+
+### Features
+
+* show the weather at the track during each session ([dc7e078](https://github.com/MilesPurvis/LapAnalysis/commit/dc7e078012162de1ba3748536fb64e39b7285dab))
+* show the weather at the track during each session ([982938c](https://github.com/MilesPurvis/LapAnalysis/commit/982938c5582a2a7ec64dbf1343e88aba8287c985))
+
 ## [0.4.0](https://github.com/MilesPurvis/LapAnalysis/compare/v0.3.0...v0.4.0) (2026-10-12)
 
 
