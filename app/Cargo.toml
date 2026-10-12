@@ -1,6 +1,6 @@
 [package]
 name = "lapanalysis"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Download AiM Solo 2 DL sessions over Wi-Fi and view them in a local web app"
 publish = false
