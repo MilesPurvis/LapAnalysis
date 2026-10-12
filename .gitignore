@@ -1,0 +1,23 @@
+# The repo is the app. Everything below stays local.
+
+# Downloaded sessions: the app creates library/ on first run and reads it.
+library/
+*.xrz
+*.xrk
+
+# Reverse-engineering work: lab notebook, Wi-Fi probe scripts and their offline runner,
+# per-run captures and logs.
+LOG.md
+CHECKLIST.md
+offline.sh
+cmd-catalog.txt
+tasks/
+runs/
+*.pcap
+*.bin
+
+# Build output
+app/target/
+__pycache__/
+*.pyc
+.DS_Store

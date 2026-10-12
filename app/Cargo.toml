@@ -1,0 +1,19 @@
+[package]
+name = "lapanalysis"
+version = "0.1.0"
+edition = "2021"
+description = "Download AiM Solo 2 DL sessions over Wi-Fi and view them in a local web app"
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+# Not on crates.io; pinned to the commit verified against the Solo's .xrz files on 2026-10-12.
+libxrk = { git = "https://github.com/m3rlin45/libxrk", rev = "4e44d38debc9445b8e5446c9b7a241f5730ac920" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+
+[profile.release]
+debug = false
