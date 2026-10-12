@@ -66,6 +66,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/theoretical", get(theoretical))
         .route("/api/library/{name}", get(library_detail))
         .route("/api/library/{name}/info", put(library_update_info))
+        .route("/api/library/{name}/weather", get(library_weather))
         .route("/api/library/{name}/series", get(library_series))
         .route("/api/library/{name}/track", get(library_track))
         .route("/api/library/{name}/raw", get(library_raw))
@@ -294,6 +295,11 @@ async fn theoretical(State(app): State<Arc<App>>, Query(q): Query<TheoreticalQue
         .await
         .map(Json)
         .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))
+}
+
+async fn library_weather(State(app): State<Arc<App>>, Path(name): Path<String>) -> ApiResult<crate::weather::Weather> {
+    let a = app.clone();
+    blocking(move || a.lib.weather(&name)).await.map(Json).map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, e))
 }
 
 #[derive(Deserialize)]

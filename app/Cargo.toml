@@ -14,6 +14,8 @@ libxrk = { git = "https://github.com/m3rlin45/libxrk", rev = "4e44d38debc9445b8e
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+# Weather lookups (Open-Meteo); blocking is fine, they run on worker threads.
+ureq = { version = "3", features = ["json"] }
 
 [profile.release]
 debug = false

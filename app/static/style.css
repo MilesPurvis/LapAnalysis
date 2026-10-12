@@ -241,6 +241,7 @@ label.check { display: flex; gap: 8px; align-items: center; margin-top: 12px; fo
 .laps button:disabled { opacity: 0.4; }
 .vals { display: flex; gap: 12px; font-variant-numeric: tabular-nums; font-weight: 500; }
 
+.weather-line { margin: -8px 0 16px; font-size: 13px; }
 a.stat { text-decoration: none; }
 a.stat:hover { border-color: var(--muted); }
 .theory-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 10px; }

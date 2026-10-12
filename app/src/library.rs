@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::aim::DeviceSession;
 use crate::info::{friendly_file_name, SessionInfo};
+use crate::weather::Weather;
 
 const INDEX_FILE: &str = "index.json";
 
@@ -29,6 +30,9 @@ struct IndexEntry {
     /// What you've recorded about the session.
     #[serde(default)]
     info: SessionInfo,
+    /// Weather at the track during the session, once fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    weather: Option<Weather>,
 }
 
 pub struct Library {
@@ -45,8 +49,6 @@ pub struct Loaded {
     /// a session the firmware wrote them into.
     pub text: Option<String>,
     pub error: Option<String>,
-    /// Bytes of debug-log text removed before parsing (0 = the file was clean).
-    pub repaired_bytes: usize,
 }
 
 #[derive(Serialize)]
@@ -114,7 +116,6 @@ pub struct SessionDetail {
     pub device: Option<DeviceSession>,
     pub text: Option<String>,
     pub error: Option<String>,
-    pub repaired_bytes: usize,
 }
 
 /// Values used before, most common first, for autocomplete.
@@ -272,6 +273,29 @@ impl Library {
         }
     }
 
+    /// Weather during a session: saved copy if there is one, else fetched from Open-Meteo
+    /// (needs internet) and saved.
+    pub fn weather(&self, name: &str) -> Result<Weather> {
+        let entry = self.index.lock().unwrap().get(name).cloned();
+        if let Some(w) = entry.as_ref().and_then(|e| e.weather.clone()) {
+            return Ok(w);
+        }
+        let item = self.item(name)?;
+        if item.date.is_empty() {
+            bail!("this session has no date");
+        }
+        let loaded = self.load(name)?;
+        let gps = loaded.xrk.as_ref().and_then(|x| x.gps.as_ref());
+        let fix = gps.and_then(|g| g.latitude.iter().zip(&g.longitude).find(|(la, lo)| **la != 0.0 || **lo != 0.0));
+        let logged = entry.as_ref().and_then(|e| e.device.as_ref()).and_then(|d| d.track_lat.zip(d.track_lon));
+        let (lat, lon) = fix.map(|(la, lo)| (*la, *lo)).or(logged).context("this session has no position")?;
+        let w = crate::weather::fetch(lat, lon, &item.date, &item.time, item.duration_ms)?;
+        let mut index = self.index.lock().unwrap();
+        index.entry(name.to_string()).or_default().weather = Some(w.clone());
+        self.save_index(&index)?;
+        Ok(w)
+    }
+
     /// File name for downloading a session from the UI.
     pub fn download_name(&self, name: &str) -> String {
         let entry = self.index.lock().unwrap().get(name).cloned();
@@ -376,7 +400,6 @@ impl Library {
             device: entry.and_then(|e| e.device),
             text: loaded.text.clone(),
             error: loaded.error.clone(),
-            repaired_bytes: loaded.repaired_bytes,
         };
         let Some(x) = &loaded.xrk else { return Ok(d) };
         let m = &x.metadata;
@@ -465,15 +488,14 @@ fn ranked<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
 
 fn parse(raw: &[u8]) -> Loaded {
     let (data, log) = strip_log_lines(raw);
-    let repaired_bytes = raw.len() - data.len();
     let text = (!log.is_empty()).then(|| log.join("\n"));
     if data.iter().all(u8::is_ascii_whitespace) {
-        return Loaded { xrk: None, text, error: None, repaired_bytes };
+        return Loaded { xrk: None, text, error: None };
     }
     match libxrk::read_xrk(&data) {
-        Ok(x) if !x.channels.is_empty() || x.gps.is_some() => Loaded { xrk: Some(x), text, error: None, repaired_bytes },
-        Ok(_) => Loaded { xrk: None, text, error: Some("file has no channels".into()), repaired_bytes },
-        Err(e) => Loaded { xrk: None, text, error: Some(e.to_string()), repaired_bytes },
+        Ok(x) if !x.channels.is_empty() || x.gps.is_some() => Loaded { xrk: Some(x), text, error: None },
+        Ok(_) => Loaded { xrk: None, text, error: Some("file has no channels".into()) },
+        Err(e) => Loaded { xrk: None, text, error: Some(e.to_string()) },
     }
 }
 

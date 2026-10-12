@@ -296,7 +296,7 @@ overwriting data. Removing them restores a zlib stream whose checksum passes, so
 is lossless. Occasionally a "session" is nothing but the log (`a_0123.xrz`, 0 laps).
 
 LapAnalysis strips these lines whenever it reads a file. The file on disk stays exactly as
-downloaded, and the session page marks it "Repaired" and shows what was removed.
+downloaded.
 
 ---
 
@@ -309,6 +309,7 @@ downloaded, and the session page marks it "Repaired" and shows what was removed.
 | `app/src/best.rs` | Theoretical best lap: corner detection and the fastest time through each corner |
 | `app/src/compare.rs` | Lap comparison: distance alignment, time delta, channels resampled onto one grid |
 | `app/src/info.rs` | Your session details (name, driver, car, track, tyres and pressures, notes) and their validation |
+| `app/src/weather.rs` | Weather at the track during a session, from Open-Meteo |
 | `app/src/web.rs` | axum server: JSON API, background download job, embedded assets |
 | `app/src/fake.rs` | A fake Solo implementing the logger side of the protocol, for tests and UI work |
 | `app/static/` | The UI: plain JS, uPlot for charts (vendored so it works offline) |
@@ -333,6 +334,14 @@ corners, then sampled at the same 1,200 distances. At each one, the lap's elapse
 the reference's is the time gained or lost there, and channels are read at that moment. Laps
 from other sessions are offered when their first GPS fix is within 3 km of the reference's.
 
+**Weather:** the first time a session page opens with internet, LapAnalysis asks
+[Open-Meteo](https://open-meteo.com) (free, no API key) for the hours the session covers at
+its first GPS fix, in the track's local time: temperature, humidity, rain, WMO weather code,
+cloud cover, wind and gusts. Its archive is tried first, then its recent-history feed for the
+last few days the archive doesn't have yet. The result is saved in the session's
+`index.json` entry, so it shows offline afterwards. Only the coordinates and the date are
+sent.
+
 **Theoretical best:** only full laps count (no out- or in-laps), from the sessions you tick,
 which can mix cars and drivers at the same track. Laps whose GPS distance is more than 5% off
 the median are dropped as bad GPS or a cut track. On the fastest lap's speed trace, smoothed
@@ -355,6 +364,7 @@ previous lap counts toward T1, so a good exit from the last corner shows up ther
 | `GET /api/library/{name}/track?lap=&points=` | GPS track with speed |
 | `GET /api/library/{name}/raw` | The file as downloaded |
 | `GET /api/theoretical?sessions=…` | Theoretical best over the full laps of those sessions (the first decides the track) |
+| `GET /api/library/{name}/weather` | Hourly weather covering the session (saved copy, or fetched once and saved) |
 | `GET /api/laps` | Every session with GPS, its laps and first GPS fix, for picking laps to compare |
 | `GET /api/compare?laps=file:lap,…&channels=…&points=` | Laps lined up by distance: time delta to the first (reference) lap, channels, racing lines |
 
