@@ -63,6 +63,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/library", get(library_list))
         .route("/api/laps", get(lap_catalog))
         .route("/api/compare", get(compare_laps))
+        .route("/api/theoretical", get(theoretical))
         .route("/api/library/{name}", get(library_detail))
         .route("/api/library/{name}/info", put(library_update_info))
         .route("/api/library/{name}/series", get(library_series))
@@ -278,6 +279,21 @@ async fn compare_laps(State(app): State<Arc<App>>, Query(q): Query<CompareQuery>
         .await
         .map(Json)
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))
+}
+
+#[derive(Deserialize)]
+struct TheoreticalQuery {
+    /// Session files, comma-separated; the first one decides the track.
+    sessions: String,
+}
+
+async fn theoretical(State(app): State<Arc<App>>, Query(q): Query<TheoreticalQuery>) -> ApiResult<crate::best::TheoreticalBest> {
+    let files: Vec<String> = q.sessions.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
+    let a = app.clone();
+    blocking(move || crate::best::theoretical_best(&a.lib, &files))
+        .await
+        .map(Json)
+        .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))
 }
 
 #[derive(Deserialize)]

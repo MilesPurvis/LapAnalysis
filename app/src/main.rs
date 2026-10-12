@@ -1,6 +1,7 @@
 //! LapAnalysis: download AiM Solo 2 DL sessions over Wi-Fi and browse them in a local web app.
 
 mod aim;
+mod best;
 mod compare;
 mod fake;
 mod info;
