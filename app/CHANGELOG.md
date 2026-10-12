@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/MilesPurvis/LapAnalysis/compare/v0.3.0...v0.4.0) (2026-10-12)
+
+
+### Features
+
+* theoretical best lap from the sessions you pick ([0b28eda](https://github.com/MilesPurvis/LapAnalysis/commit/0b28eda5519e184872cd6088ec92463f76c70d79))
+* theoretical best lap from the sessions you pick ([1d38975](https://github.com/MilesPurvis/LapAnalysis/commit/1d38975fc9f18ecad0e6f156351822e5e72a4398))
+
 ## [0.3.0](https://github.com/MilesPurvis/LapAnalysis/compare/v0.2.0...v0.3.0) (2026-10-12)
 
 
