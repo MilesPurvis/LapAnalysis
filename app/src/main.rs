@@ -99,7 +99,7 @@ async fn serve(lib: Library, ep: Endpoint, udp_local: u16, port: u16) -> Result<
     let app = web::App::new(lib, ka, ep);
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("bind {addr}"))?;
-    println!("LapAnalysis running at http://{addr}  (Ctrl-C to stop)");
+    println!("LapAnalysis v{} running at http://{addr}  (Ctrl-C to stop)", env!("CARGO_PKG_VERSION"));
     axum::serve(listener, web::router(app)).with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; }).await?;
     Ok(())
 }

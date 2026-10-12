@@ -54,7 +54,7 @@ impl App {
 
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
-        .route("/", get(|| async { asset("index.html") }))
+        .route("/", get(|| async { index() }))
         .route("/assets/{file}", get(|Path(file): Path<String>| async move { asset(&file) }))
         .route("/api/device", get(device_status))
         .route("/api/device/sessions", get(device_sessions))
@@ -67,9 +67,13 @@ pub fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
+fn index() -> Response {
+    let html = include_str!("../static/index.html").replace("__VERSION__", env!("CARGO_PKG_VERSION"));
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], html).into_response()
+}
+
 fn asset(name: &str) -> Response {
     let (body, mime): (&'static [u8], &str) = match name {
-        "index.html" => (include_bytes!("../static/index.html"), "text/html; charset=utf-8"),
         "app.js" => (include_bytes!("../static/app.js"), "text/javascript; charset=utf-8"),
         "style.css" => (include_bytes!("../static/style.css"), "text/css; charset=utf-8"),
         "uPlot.iife.min.js" => (include_bytes!("../static/uPlot.iife.min.js"), "text/javascript; charset=utf-8"),
