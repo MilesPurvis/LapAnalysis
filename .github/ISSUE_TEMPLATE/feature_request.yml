@@ -1,0 +1,21 @@
+name: Feature request
+description: Something LapAnalysis should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What do you want to do?
+      description: The goal, e.g. "compare my best lap against another session's".
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What it would help with, at the track or afterwards.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Sessions it applies to, screenshots, ideas for how it could look.

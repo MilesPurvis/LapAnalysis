@@ -1,0 +1,22 @@
+name: Bug report
+description: Something LapAnalysis does wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in the app header, or run `lapanalysis --version`.
+      placeholder: v0.1.0
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Session file name, whether you were on the Solo's Wi-Fi, terminal output.

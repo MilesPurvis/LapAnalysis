@@ -1,0 +1,18 @@
+# Turns Conventional Commits on main into versions: keeps a release PR open with the
+# Cargo.toml bump and changelog; merging it tags vX.Y.Z and publishes a GitHub Release.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # Reads release-please-config.json and .release-please-manifest.json.
+      - uses: googleapis/release-please-action@v5
