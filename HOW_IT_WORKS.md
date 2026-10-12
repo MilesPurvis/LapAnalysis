@@ -306,6 +306,7 @@ downloaded, and the session page marks it "Repaired" and shows what was removed.
 |---|---|
 | `app/src/aim.rs` | Protocol client: keep-alive thread, framing, sessions, commands, CSV parsing |
 | `app/src/library.rs` | `library/` folder: atomic saves + `index.json`, debug-log repair, libxrk parsing (cached), chart and map data |
+| `app/src/compare.rs` | Lap comparison: distance alignment, time delta, channels resampled onto one grid |
 | `app/src/info.rs` | Your session details (name, driver, car, track, tyres and pressures, notes) and their validation |
 | `app/src/web.rs` | axum server: JSON API, background download job, embedded assets |
 | `app/src/fake.rs` | A fake Solo implementing the logger side of the protocol, for tests and UI work |
@@ -324,6 +325,13 @@ cursor lines up across channels sampled at different rates. The map is the GPS t
 projected flat (longitude scaled by cos(latitude)) and coloured by speed, with a marker
 following the cursor.
 
+**Comparing laps:** each lap's distance comes from integrating GPS speed between its start
+and finish, with fixes pinned to both ends so the finish lands exactly on the lap time. Every
+lap is scaled to the reference lap's length, so a slightly longer line doesn't shift the
+corners, then sampled at the same 1,200 distances. At each one, the lap's elapsed time minus
+the reference's is the time gained or lost there, and channels are read at that moment. Laps
+from other sessions are offered when their first GPS fix is within 3 km of the reference's.
+
 | Endpoint | Returns |
 |---|---|
 | `GET /api/device` | Logger status from the keep-alive |
@@ -335,6 +343,8 @@ following the cursor.
 | `GET /api/library/{name}/series?id=&lap=&points=` | One channel, downsampled |
 | `GET /api/library/{name}/track?lap=&points=` | GPS track with speed |
 | `GET /api/library/{name}/raw` | The file as downloaded |
+| `GET /api/laps` | Every session with GPS, its laps and first GPS fix, for picking laps to compare |
+| `GET /api/compare?laps=file:lap,…&channels=…&points=` | Laps lined up by distance: time delta to the first (reference) lap, channels, racing lines |
 
 ---
 

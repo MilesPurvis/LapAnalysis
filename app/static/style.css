@@ -231,6 +231,16 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .pressures input { width: 76px; }
 label.check { display: flex; gap: 8px; align-items: center; margin-top: 12px; font-size: 13px; color: var(--text); }
 
+.lap-chips { display: grid; gap: 8px; margin-top: 12px; }
+.lap-chip { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.lap-chip .swatch, td .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; flex: none; vertical-align: middle; }
+.small-btn { padding: 4px 10px; font-size: 12px; }
+.picker { display: grid; gap: 12px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.picker-row { display: grid; grid-template-columns: minmax(180px, 240px) 1fr; gap: 12px; align-items: start; }
+.picker-row .laps { margin: 0; }
+.laps button:disabled { opacity: 0.4; }
+.vals { display: flex; gap: 12px; font-variant-numeric: tabular-nums; font-weight: 500; }
+
 pre.log {
   max-height: 520px; overflow: auto; margin: 0;
   font: 12px/1.5 var(--mono); white-space: pre-wrap;
@@ -239,6 +249,7 @@ pre.log {
 
 @media (max-width: 640px) {
   .form-grid { grid-template-columns: 1fr; }
+  .picker-row { grid-template-columns: 1fr; }
   .top { gap: 12px; padding: 0 16px; }
   .device-pill .label { display: none; }
   main { padding: 16px; }

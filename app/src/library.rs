@@ -301,44 +301,46 @@ impl Library {
     }
 
     pub fn list(&self) -> Result<Vec<LibraryItem>> {
-        let index = self.index.lock().unwrap().clone();
-        let mut items = vec![];
-        for name in self.file_names()? {
-            let size = fs::metadata(self.path(&name)?)?.len();
-            let loaded = self.load(&name)?;
-            let (laps, best) = loaded.xrk.as_ref().map(lap_stats).unwrap_or((0, None));
-            let entry = index.get(&name);
-            let rec = recorded(entry, &loaded);
-            let info = entry.map(|e| e.info.clone()).unwrap_or_default();
-            let mut item = LibraryItem {
-                kind: kind(&loaded),
-                name: name.clone(),
-                title: info.name.clone(),
-                size,
-                track: first(&info.track, &rec.track).to_string(),
-                driver: first(&info.driver, &rec.driver).to_string(),
-                vehicle: first(&info.vehicle, &rec.vehicle).to_string(),
-                has_notes: !info.notes.is_empty(),
-                date: rec.date,
-                time: rec.time,
-                laps,
-                best_ms: best,
-                duration_ms: None,
-                downloaded_at: entry.and_then(|e| e.downloaded_at),
-            };
-            if let Some(d) = entry.and_then(|e| e.device.as_ref()) {
-                item.duration_ms = d.duration_ms;
-                // Match the Logger tab, which counts the out-lap too.
-                item.laps = d.laps as usize;
-                item.best_ms = d.best_ms.or(item.best_ms);
-            }
-            if item.duration_ms.is_none() {
-                item.duration_ms = loaded.xrk.as_ref().map(|x| (span_ms(x).1 - span_ms(x).0) as u64);
-            }
-            items.push(item);
-        }
+        let mut items = self.file_names()?.iter().map(|n| self.item(n)).collect::<Result<Vec<_>>>()?;
         items.sort_by(|a, b| (&b.date, &b.time, &b.name).cmp(&(&a.date, &a.time, &a.name)));
         Ok(items)
+    }
+
+    /// One library row: your details over what the logger recorded.
+    pub fn item(&self, name: &str) -> Result<LibraryItem> {
+        let size = fs::metadata(self.path(name)?)?.len();
+        let loaded = self.load(name)?;
+        let (laps, best) = loaded.xrk.as_ref().map(lap_stats).unwrap_or((0, None));
+        let entry = self.index.lock().unwrap().get(name).cloned();
+        let entry = entry.as_ref();
+        let rec = recorded(entry, &loaded);
+        let info = entry.map(|e| e.info.clone()).unwrap_or_default();
+        let mut item = LibraryItem {
+            kind: kind(&loaded),
+            name: name.to_string(),
+            title: info.name.clone(),
+            size,
+            track: first(&info.track, &rec.track).to_string(),
+            driver: first(&info.driver, &rec.driver).to_string(),
+            vehicle: first(&info.vehicle, &rec.vehicle).to_string(),
+            has_notes: !info.notes.is_empty(),
+            date: rec.date,
+            time: rec.time,
+            laps,
+            best_ms: best,
+            duration_ms: None,
+            downloaded_at: entry.and_then(|e| e.downloaded_at),
+        };
+        if let Some(d) = entry.and_then(|e| e.device.as_ref()) {
+            item.duration_ms = d.duration_ms;
+            // Match the Logger tab, which counts the out-lap too.
+            item.laps = d.laps as usize;
+            item.best_ms = d.best_ms.or(item.best_ms);
+        }
+        if item.duration_ms.is_none() {
+            item.duration_ms = loaded.xrk.as_ref().map(|x| (span_ms(x).1 - span_ms(x).0) as u64);
+        }
+        Ok(item)
     }
 
     pub fn detail(&self, name: &str) -> Result<SessionDetail> {
@@ -526,7 +528,7 @@ fn kind(l: &Loaded) -> &'static str {
     }
 }
 
-fn value(v: &ChannelValues, i: usize) -> f64 {
+pub(crate) fn value(v: &ChannelValues, i: usize) -> f64 {
     match v {
         ChannelValues::UInt8(a) => a[i] as f64,
         ChannelValues::UInt16(a) => a[i] as f64,
@@ -568,7 +570,7 @@ fn lap_stats(x: &XrkFile) -> (usize, Option<u64>) {
     (full, best_full_lap(x).map(|(_, d)| d as u64))
 }
 
-fn laps(x: &XrkFile) -> Vec<Lap> {
+pub(crate) fn laps(x: &XrkFile) -> Vec<Lap> {
     let best = best_full_lap(x).map(|(n, _)| n);
     x.laps
         .iter()
@@ -614,7 +616,7 @@ fn channels(x: &XrkFile) -> Vec<ChannelInfo> {
     out
 }
 
-fn lap_window(x: &XrkFile, lap: Option<i32>) -> Result<(i64, i64)> {
+pub(crate) fn lap_window(x: &XrkFile, lap: Option<i32>) -> Result<(i64, i64)> {
     match lap {
         None => Ok(span_ms(x)),
         Some(n) => {

@@ -102,6 +102,7 @@ function route() {
   const view = $("#view");
   if (page === "logger") cleanup = loggerView(view);
   else if (page === "session" && arg) cleanup = sessionView(view, decodeURIComponent(arg));
+  else if (page === "compare") cleanup = compareView(view, arg);
   else cleanup = libraryView(view);
   window.scrollTo(0, 0);
 }
@@ -417,11 +418,12 @@ function sessionView(view, name) {
     if (!d.laps.length) return "";
     const best = d.laps.find((l) => l.best);
     return `<div class="card"><h2>Laps</h2><table>
-      <thead><tr><th>Lap</th><th class="num">Time</th><th class="num">Δ best</th></tr></thead>
+      <thead><tr><th>Lap</th><th class="num">Time</th><th class="num">Δ best</th><th></th></tr></thead>
       <tbody>${d.laps.map((l) => `<tr class="link" data-lap="${l.num}">
         <td>${l.kind === "out" ? "Out" : l.num} ${l.best ? `<span class="chip good">best</span>` : ""}</td>
         <td class="num">${fmt.lap(l.duration_ms)}</td>
-        <td class="num muted">${best && l.kind === "full" && !l.best ? `+${((l.duration_ms - best.duration_ms) / 1000).toFixed(3)}` : ""}</td></tr>`).join("")}
+        <td class="num muted">${best && l.kind === "full" && !l.best ? `+${((l.duration_ms - best.duration_ms) / 1000).toFixed(3)}` : ""}</td>
+        <td class="num"><a class="small" href="#/compare/${encodeURIComponent(d.name)}:${l.num}" onclick="event.stopPropagation()">Compare</a></td></tr>`).join("")}
       </tbody></table></div>`;
   }
 
@@ -452,19 +454,11 @@ function sessionView(view, name) {
   function drawMap() {
     const canvas = $("#map");
     if (!canvas || !track) return;
-    const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
-    canvas.width = w * dpr; canvas.height = h * dpr;
-    const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, w, h);
+    const { ctx, w, h } = setupCanvas(canvas);
     const n = track.lat.length;
     if (n < 2) { ctx.fillStyle = cssVar("--muted"); ctx.fillText("No GPS fix in this lap", 12, 20); return; }
-    const lat0 = track.lat.reduce((a, b) => a + b, 0) / n, k = Math.cos((lat0 * Math.PI) / 180);
-    const xs = track.lon.map((v) => v * k), ys = track.lat;
-    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-    const pad = 16, scale = Math.min((w - 2 * pad) / (x1 - x0 || 1e-9), (h - 2 * pad) / (y1 - y0 || 1e-9));
-    const ox = (w - (x1 - x0) * scale) / 2, oy = (h - (y1 - y0) * scale) / 2;
-    const px = (i) => [ox + (xs[i] - x0) * scale, h - (oy + (ys[i] - y0) * scale)];
+    const proj = makeProjection(w, h, [track.lat], [track.lon]);
+    const px = (i) => proj(track.lat[i], track.lon[i]);
     const smin = Math.min(...track.speed_kmh), smax = Math.max(...track.speed_kmh);
     $("#smin").textContent = fmt.num(smin, "km/h");
     $("#smax").textContent = fmt.num(smax, "km/h");
@@ -564,6 +558,278 @@ function sessionView(view, name) {
     destroyCharts();
     window.removeEventListener("resize", onResize);
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// compare
+
+const LAP_COLORS = ["#e5484d", "#3b82f6", "#22c55e", "#f59e0b", "#a855f7"];
+const MAX_COMPARE = LAP_COLORS.length;
+const COMPARE_CHANNELS = ["GPS Speed", "LateralAcc", "InlineAcc"];
+
+const lapName = (l) => (l.kind === "out" ? "Out lap" : l.kind === "in" ? "In lap" : `Lap ${l.num}`);
+
+function parseLapSpec(arg) {
+  return (arg || "").split(",").filter(Boolean).map((part) => {
+    const i = part.lastIndexOf(":");
+    return { file: decodeURIComponent(part.slice(0, i)), lap: Number(part.slice(i + 1)) };
+  }).filter((p) => p.file && Number.isFinite(p.lap));
+}
+
+// Rough distance in km between two [lat, lon] points; plenty for "same track?".
+function kmBetween(a, b) {
+  if (!a || !b) return Infinity;
+  const r = Math.PI / 180;
+  return 6371 * Math.hypot((b[0] - a[0]) * r, (b[1] - a[1]) * r * Math.cos(a[0] * r));
+}
+
+function fmtGap(ms) {
+  return `${ms >= 0 ? "+" : "−"}${(Math.abs(ms) / 1000).toFixed(3)}`;
+}
+
+function compareView(view, arg) {
+  let alive = true, catalog = [], picked = parseLapSpec(arg), result = null, charts = [], cursor = null, sameTrack = true;
+  view.innerHTML = `
+    <h1>Compare laps</h1>
+    <p class="sub">Laps are lined up by distance around the track. The first is the reference; the others are timed against it.</p>
+    <div class="card" id="picked"><div class="empty">Loading laps…</div></div>
+    <div id="result"></div>`;
+  const onResize = () => { sizeCharts(); drawLines(); };
+  window.addEventListener("resize", onResize);
+
+  api("/api/laps").then((c) => {
+    if (!alive) return;
+    catalog = c;
+    renderPicked();
+    load();
+  }).catch((e) => { $("#picked").innerHTML = `<div class="empty error">${esc(e.message)}</div>`; });
+
+  const session = (file) => catalog.find((s) => s.name === file);
+  const lapOf = (file, num) => session(file)?.laps.find((l) => l.num === num);
+
+  function setPicked(next) {
+    picked = next.slice(0, MAX_COMPARE);
+    history.replaceState(null, "", `#/compare/${picked.map((p) => `${encodeURIComponent(p.file)}:${p.lap}`).join(",")}`);
+    renderPicked();
+    load();
+  }
+
+  function renderPicked() {
+    const chips = picked.map((p, i) => {
+      const s = session(p.file), l = lapOf(p.file, p.lap);
+      const meta = [l && fmt.lap(l.duration_ms), s && fmt.started(s.date, s.time), s?.driver, s?.vehicle].filter(Boolean).map(esc).join(" · ");
+      return `<div class="lap-chip">
+        <span class="swatch" style="background:${LAP_COLORS[i]}"></span>
+        <div><strong>${esc(s?.title || p.file)} · ${l ? lapName(l) : `Lap ${p.lap}`}</strong>${i === 0 ? ` <span class="chip">reference</span>` : ""}
+          <div class="muted small">${meta}</div></div>
+        <span class="spacer"></span>
+        ${i ? `<button class="small-btn" data-ref="${i}">Set as reference</button>` : ""}
+        <button class="small-btn" data-remove="${i}" aria-label="Remove lap">✕</button>
+      </div>`;
+    }).join("");
+    $("#picked").innerHTML = `
+      <div class="row"><h2 style="margin:0">Laps</h2><span class="muted small">${picked.length} of ${MAX_COMPARE}</span><span class="spacer"></span>
+        <label class="check" style="margin:0"><input type="checkbox" id="same-track"${sameTrack ? " checked" : ""}> Same track only</label></div>
+      ${chips ? `<div class="lap-chips">${chips}</div>` : `<p class="muted" style="margin:10px 0 0">Pick laps below, or use "Compare" in a session's lap list.</p>`}
+      <div class="picker">${pickerHtml()}</div>`;
+    view.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", () => setPicked(picked.filter((_, i) => i !== Number(b.dataset.remove)))));
+    view.querySelectorAll("[data-ref]").forEach((b) => b.addEventListener("click", () => {
+      const i = Number(b.dataset.ref);
+      setPicked([picked[i], ...picked.filter((_, j) => j !== i)]);
+    }));
+    $("#same-track").addEventListener("change", (e) => { sameTrack = e.target.checked; renderPicked(); });
+    view.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", () => {
+      const v = b.dataset.add, i = v.lastIndexOf(":"), p = { file: v.slice(0, i), lap: Number(v.slice(i + 1)) };
+      const at = picked.findIndex((q) => q.file === p.file && q.lap === p.lap);
+      setPicked(at >= 0 ? picked.filter((_, j) => j !== at) : [...picked, p]);
+    }));
+  }
+
+  function pickerHtml() {
+    const refPos = picked.length ? session(picked[0].file)?.position : null;
+    const list = catalog.filter((s) => !sameTrack || !refPos || kmBetween(s.position, refPos) < 3);
+    if (!list.length) return `<p class="muted" style="margin:0">No sessions with GPS in the library.</p>`;
+    const full = picked.length >= MAX_COMPARE;
+    return list.map((s) => `<div class="picker-row">
+      <div><strong>${esc(s.title || s.name)}</strong>
+        <div class="muted small">${[fmt.started(s.date, s.time), s.driver, s.vehicle].filter(Boolean).map(esc).join(" · ")}</div></div>
+      <div class="laps">${s.laps.map((l) => {
+        const on = picked.some((p) => p.file === s.name && p.lap === l.num);
+        return `<button data-add="${esc(s.name)}:${l.num}" class="${on ? "selected" : l.best ? "best" : ""}"${full && !on ? " disabled" : ""}>${lapName(l)} · ${fmt.lap(l.duration_ms)}</button>`;
+      }).join("")}</div></div>`).join("");
+  }
+
+  let seq = 0;
+  async function load() {
+    const mine = ++seq, box = $("#result");
+    destroyCharts();
+    result = null;
+    if (picked.length < 2) {
+      box.innerHTML = picked.length ? `<div class="card empty">Add another lap to compare against the reference.</div>` : "";
+      return;
+    }
+    const available = [...new Set(picked.flatMap((p) => session(p.file)?.channels || []))];
+    const chans = store.get("lapanalysis.compareChannels", COMPARE_CHANNELS).filter((c) => available.includes(c));
+    box.innerHTML = `<div class="card empty">Lining up laps…</div>`;
+    const laps = encodeURIComponent(picked.map((p) => `${p.file}:${p.lap}`).join(","));
+    let r;
+    try {
+      r = await api(`/api/compare?laps=${laps}&channels=${encodeURIComponent(chans.join(","))}&points=1200`);
+    } catch (e) {
+      if (mine === seq) box.innerHTML = `<div class="card empty error">${esc(e.message)}</div>`;
+      return;
+    }
+    if (!alive || mine !== seq) return;
+    result = r;
+    renderResult(available, chans);
+  }
+
+  function renderResult(available, chans) {
+    const ref = result.laps[0];
+    $("#result").innerHTML = `
+      <div class="card"><h2>Summary</h2><div class="table-wrap"><table>
+        <thead><tr><th></th><th>Lap</th><th>Driver</th><th>Car</th><th class="num">Time</th><th class="num">Gap</th><th class="num">Distance</th></tr></thead>
+        <tbody>${result.laps.map((l, i) => {
+          const lap = lapOf(l.name, l.lap) || { num: l.lap, kind: "full" };
+          return `<tr><td><span class="swatch" style="background:${LAP_COLORS[i]}"></span></td>
+            <td>${esc(l.title || l.name)} · ${lapName(lap)}</td><td>${esc(l.driver) || "–"}</td><td>${esc(l.vehicle) || "–"}</td>
+            <td class="num">${fmt.lap(l.lap_ms)}</td><td class="num">${i ? fmtGap(l.lap_ms - ref.lap_ms) : "ref"}</td>
+            <td class="num">${Math.round(l.length_m).toLocaleString()} m</td></tr>`;
+        }).join("")}</tbody></table></div></div>
+      <div class="session-grid">
+        <div class="card map-card"><h2>Racing lines</h2><canvas id="cmp-map"></canvas>
+          <p class="muted small" id="cursor-at">Hover a chart to follow the laps around the track.</p></div>
+        <div class="card">
+          <div class="row" style="margin-bottom:4px"><h2 style="margin:0">Channels</h2><span class="spacer"></span>
+            <span class="muted small">Drag to zoom · double-click to reset</span></div>
+          <div class="channels" id="cmp-channels">${available.map((name) => `
+            <label><input type="checkbox" value="${esc(name)}"${chans.includes(name) ? " checked" : ""}><span class="swatch" style="background:var(--text)"></span>${esc(name)}</label>`).join("")}</div>
+          <div id="cmp-charts"></div>
+        </div>
+      </div>`;
+    view.querySelectorAll("#cmp-channels input").forEach((cb) => cb.addEventListener("change", () => {
+      store.set("lapanalysis.compareChannels", [...view.querySelectorAll("#cmp-channels input:checked")].map((x) => x.value));
+      load();
+    }));
+    const box = $("#cmp-charts");
+    addChart(box, "Time gained / lost", "s", result.laps.map((l) => l.delta_s), (v) => fmtGap(v * 1000));
+    for (const name of chans) addChart(box, name, result.units[name] || "", result.laps.map((l) => l.channels[name]), (v) => fmt.num(v));
+    drawLines();
+  }
+
+  let syncing = false;
+  function addChart(box, title, units, series, fmtValue) {
+    const wrap = document.createElement("div");
+    wrap.className = "chart";
+    wrap.innerHTML = `<div class="title"><span>${esc(title)}${units ? ` <span class="muted">${esc(units)}</span>` : ""}</span><span class="vals"></span></div>`;
+    box.appendChild(wrap);
+    const vals = $(".vals", wrap), x = result.distance, end = x[x.length - 1];
+    const axis = { stroke: cssVar("--axis"), grid: { stroke: cssVar("--grid") }, ticks: { stroke: cssVar("--grid") } };
+    const u = new uPlot({
+      width: Math.max(200, box.clientWidth), height: 150,
+      cursor: { sync: { key: "compare" }, drag: { x: true, y: false } },
+      legend: { show: false },
+      scales: { x: { time: false, auto: false, range: (u, min, max) => [min ?? 0, max ?? end] } },
+      axes: [
+        { ...axis, values: (u, ticks) => ticks.map((v) => `${Math.round(v)} m`) },
+        { ...axis, size: 50, values: (u, ticks) => ticks.map((v) => fmt.num(v)) },
+      ],
+      series: [{}, ...series.map((_, i) => ({ stroke: LAP_COLORS[i], width: i ? 1.5 : 2, dash: title.startsWith("Time") && !i ? [4, 4] : undefined, points: { show: false } }))],
+      hooks: {
+        setCursor: [(u) => {
+          const i = u.cursor.idx;
+          vals.innerHTML = i == null ? "" : series.map((s, k) => s[i] == null ? "" : `<span style="color:${LAP_COLORS[k]}">${esc(fmtValue(s[i]))}</span>`).join("");
+          if (u === charts[0] && i !== cursor) { cursor = i; drawLines(); }
+        }],
+        setScale: [(u, key) => {
+          if (key !== "x" || syncing) return;
+          syncing = true;
+          charts.forEach((o) => { if (o !== u) o.setScale("x", { min: u.scales.x.min, max: u.scales.x.max }); });
+          syncing = false;
+        }],
+      },
+    }, [x, ...series], wrap);
+    u.over.addEventListener("dblclick", () => charts.forEach((o) => o.setScale("x", { min: 0, max: end })));
+    charts.push(u);
+  }
+
+  function drawLines() {
+    const canvas = $("#cmp-map");
+    if (!canvas || !result) return;
+    const { ctx, w, h } = setupCanvas(canvas);
+    const has = (l, i) => l.lat[i] || l.lon[i];
+    const proj = makeProjection(w, h, result.laps.map((l) => l.lat), result.laps.map((l) => l.lon));
+    if (!proj) return;
+    ctx.lineCap = "round";
+    result.laps.forEach((l, li) => {
+      ctx.strokeStyle = LAP_COLORS[li];
+      ctx.lineWidth = li ? 2 : 3;
+      ctx.beginPath();
+      let drawing = false;
+      l.lat.forEach((la, i) => {
+        if (!has(l, i)) { drawing = false; return; }
+        const [px, py] = proj(la, l.lon[i]);
+        if (drawing) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+        drawing = true;
+      });
+      ctx.stroke();
+    });
+    const at = $("#cursor-at");
+    if (cursor == null) return;
+    result.laps.forEach((l, li) => {
+      if (!has(l, cursor)) return;
+      const [px, py] = proj(l.lat[cursor], l.lon[cursor]);
+      ctx.fillStyle = LAP_COLORS[li]; ctx.strokeStyle = cssVar("--surface"); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px, py, 5.5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    });
+    if (at) at.textContent = `${Math.round(result.distance[cursor]).toLocaleString()} m into the lap`;
+  }
+
+  function sizeCharts() {
+    const box = $("#cmp-charts");
+    if (box) charts.forEach((u) => u.setSize({ width: Math.max(200, box.clientWidth), height: 150 }));
+  }
+
+  function destroyCharts() {
+    charts.forEach((u) => u.destroy());
+    charts = [];
+    cursor = null;
+  }
+
+  return () => {
+    alive = false;
+    destroyCharts();
+    window.removeEventListener("resize", onResize);
+  };
+}
+
+// ---------------------------------------------------------------------------------------
+// maps
+
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+// Flat projection of GPS points into a w×h box (longitude scaled by cos(latitude)),
+// fitted around every point in the given sets. Points at 0,0 (no fix) are ignored.
+function makeProjection(w, h, latSets, lonSets, pad = 16) {
+  const lat = [], lon = [];
+  latSets.forEach((la, s) => la.forEach((v, i) => {
+    if (v || lonSets[s][i]) { lat.push(v); lon.push(lonSets[s][i]); }
+  }));
+  if (!lat.length) return null;
+  const k = Math.cos(((lat.reduce((a, b) => a + b, 0) / lat.length) * Math.PI) / 180);
+  const xs = lon.map((v) => v * k);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...lat), Math.max(...lat)];
+  const scale = Math.min((w - 2 * pad) / (x1 - x0 || 1e-9), (h - 2 * pad) / (y1 - y0 || 1e-9));
+  const ox = (w - (x1 - x0) * scale) / 2, oy = (h - (y1 - y0) * scale) / 2;
+  return (la, lo) => [ox + (lo * k - x0) * scale, h - (oy + (la - y0) * scale)];
 }
 
 // ---------------------------------------------------------------------------------------

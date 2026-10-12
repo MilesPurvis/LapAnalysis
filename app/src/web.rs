@@ -61,6 +61,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/device/sessions", get(device_sessions))
         .route("/api/device/download", get(download_status).post(download_start))
         .route("/api/library", get(library_list))
+        .route("/api/laps", get(lap_catalog))
+        .route("/api/compare", get(compare_laps))
         .route("/api/library/{name}", get(library_detail))
         .route("/api/library/{name}/info", put(library_update_info))
         .route("/api/library/{name}/series", get(library_series))
@@ -242,6 +244,40 @@ async fn library_list(State(app): State<Arc<App>>) -> ApiResult<Vec<crate::libra
 async fn library_detail(State(app): State<Arc<App>>, Path(name): Path<String>) -> ApiResult<crate::library::SessionDetail> {
     let a = app.clone();
     blocking(move || a.lib.detail(&name)).await.map(Json).map_err(|e| ApiError(StatusCode::NOT_FOUND, e))
+}
+
+async fn lap_catalog(State(app): State<Arc<App>>) -> ApiResult<Vec<crate::compare::SessionLaps>> {
+    let a = app.clone();
+    Ok(Json(blocking(move || crate::compare::catalog(&a.lib)).await?))
+}
+
+#[derive(Deserialize)]
+struct CompareQuery {
+    /// `file:lap` pairs, reference first: `a_0124.xrz:3,a_0126.xrz:4`.
+    laps: String,
+    /// Channel names, comma-separated.
+    #[serde(default)]
+    channels: String,
+    points: Option<usize>,
+}
+
+async fn compare_laps(State(app): State<Arc<App>>, Query(q): Query<CompareQuery>) -> ApiResult<crate::compare::Comparison> {
+    let wanted = q
+        .laps
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let (file, lap) = s.rsplit_once(':').with_context(|| format!("bad lap {s:?}, expected file:lap"))?;
+            Ok((file.to_string(), lap.parse::<i32>().with_context(|| format!("bad lap number in {s:?}"))?))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
+    let channels: Vec<String> = q.channels.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect();
+    let a = app.clone();
+    blocking(move || crate::compare::compare(&a.lib, &wanted, &channels, q.points.unwrap_or(1200)))
+        .await
+        .map(Json)
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))
 }
 
 #[derive(Deserialize)]
