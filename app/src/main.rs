@@ -127,7 +127,7 @@ fn pull(lib: &Library, ep: &Endpoint, udp_local: u16, names: Vec<String>) -> Res
         let mut last_print = Instant::now() - Duration::from_secs(1);
         let result = s.read_file(&r.name, &mut |got, total| {
             if last_print.elapsed() > Duration::from_millis(500) || got == total {
-                eprint!("\r{:<12} {:>3}%  {got}/{total} B", r.name, if total > 0 { got * 100 / total } else { 100 });
+                eprint!("\r{:<12} {:>3}%  {got}/{total} B", r.name, (got * 100).checked_div(total).unwrap_or(100));
                 last_print = Instant::now();
             }
         });
